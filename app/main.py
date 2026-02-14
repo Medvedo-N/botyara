@@ -1,12 +1,19 @@
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from app.config import SPREADSHEET_ID
+from app.sheets_client import read_range
 
 from app.config import VERSION, TELEGRAM_TOKEN
 
 app = FastAPI(title="botyara", version=VERSION)
 
 telegram_app: Application | None = None
+
+@app.get("/sheet-test")
+async def sheet_test():
+    values = read_range(SPREADSHEET_ID, "A1")
+    return {"ok": True, "range": "A1", "values": values}
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,3 +43,4 @@ async def webhook(request: Request):
     update = Update.de_json(data, telegram_app.bot)
     await telegram_app.process_update(update)
     return {"ok": True}
+
