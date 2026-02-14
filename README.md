@@ -104,3 +104,26 @@ curl http://localhost:8080/healthz
 curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
   -d "url=https://<your-cloud-run-url>/webhook"
 ```
+
+## GitHub Actions Cloud Run CD
+
+This repo includes `.github/workflows/deploy-cloudrun.yml` for automatic deploy on push to `main`.
+
+### Required GitHub repository variables
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION` (example: `europe-west1`)
+- `WIF_PROVIDER` (full Workload Identity Provider resource name)
+- `WIF_SA` (service account email, e.g. `github-deploy@<project>.iam.gserviceaccount.com`)
+
+### Required GCP setup
+
+- Enable Cloud Run API.
+- Create Artifact Registry repository `botyara`.
+- Create Workload Identity Pool and GitHub OIDC Provider.
+- Grant deploy service account at least:
+  - `roles/run.admin`
+  - `roles/artifactregistry.writer`
+  - `roles/iam.serviceAccountUser`
+
+The workflow authenticates with GCP via OIDC (no long-lived JSON key), builds and pushes Docker image to Artifact Registry, and deploys service `botyara` to Cloud Run.
