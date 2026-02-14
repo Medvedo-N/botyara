@@ -443,8 +443,8 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
             key = (op.to_location, op.sku)
             qty, ver, row = balances.get(key, (0, 0, None))
             balances[key] = (qty + op.qty, ver + 1, row)
-            self._append_movement(op)
             self._write_balances_state(balances, expected_hash=base_hash)
+            self._append_movement(op)
             return Balance(location_id=op.to_location, sku=op.sku, qty=qty + op.qty)
 
         if op.op_type in {OperationType.OUT, OperationType.WRITE_OFF}:
@@ -456,8 +456,8 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
             if op.qty > qty:
                 raise ValidationError("Недостаточно остатка")
             balances[key] = (qty - op.qty, ver + 1, row)
-            self._append_movement(op)
             self._write_balances_state(balances, expected_hash=base_hash)
+            self._append_movement(op)
             return Balance(location_id=op.from_location, sku=op.sku, qty=qty - op.qty)
 
         if op.op_type == OperationType.MOVE:
@@ -475,8 +475,8 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
                 raise ValidationError("Недостаточно остатка")
             balances[from_key] = (f_qty - op.qty, f_ver + 1, f_row)
             balances[to_key] = (t_qty + op.qty, t_ver + 1, t_row)
-            self._append_movement(op)
             self._write_balances_state(balances, expected_hash=base_hash)
+            self._append_movement(op)
             return Balance(location_id=op.to_location, sku=op.sku, qty=t_qty + op.qty)
 
         raise ValidationError("Неподдерживаемая операция")
