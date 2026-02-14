@@ -111,6 +111,29 @@ def _parse_operation_type(raw: str) -> OperationType:
     return OperationType(raw)
 
 
+def _normalize_text(text: str) -> str:
+    cleaned = text.strip().lower()
+    for emoji in ["📦", "📄", "📥", "⚠️", "⚠", "➕", "➖", "🔁", "🔎", "🧾", "📍", "👥", "⚙️", "⚙"]:
+        cleaned = cleaned.replace(emoji, "")
+    return " ".join(cleaned.split())
+
+
+def _menu_action_from_text(text: str) -> str | None:
+    normalized = _normalize_text(text)
+    mapping = {
+        "остатки": "stock:balances",
+        "взять товар": "op:start:OUT",
+        "выдача": "op:start:OUT",
+        "расход": "op:start:OUT",
+        "приход": "op:start:IN",
+        "брак": "op:start:WRITE_OFF",
+        "списание": "op:start:WRITE_OFF",
+        "перемещение": "op:start:MOVE",
+        "склад": "menu:stock",
+    }
+    return mapping.get(normalized)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if user is None or update.message is None:
@@ -125,6 +148,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         f"Ботяра запущен ✅\nВерсия: {VERSION}\nВаша роль: {_role_name(role)}",
         reply_markup=_main_menu(role),
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        "Команды:\n"
+        "/start — главное меню\n"
+        "/help — эта справка\n\n"
+        "Быстрые действия текстом/кнопками:\n"
+        "Остатки, Взять товар, Приход, Брак, Перемещение"
     )
 
 
@@ -336,6 +371,34 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     state = context.user_data.get("state", UserState.IDLE)
     text = (update.message.text or "").strip()
 
+    if state == UserState.IDLE:
+        action = _menu_action_from_text(text)
+        if action == "menu:stock":
+            role = get_role(update.effective_user.id if update.effective_user else 0)
+            if not can_access_stock(role):
+                await update.message.reply_text(NO_ACCESS_TEXT)
+                return
+            await update.message.reply_text("Раздел: Склад", reply_markup=_stock_menu())
+            return
+
+        if action == "stock:balances":
+            context.user_data["state"] = UserState.SELECT_LOCATION
+            await update.message.reply_text("Выберите локацию", reply_markup=_locations_menu("balance"))
+            return
+
+        if action and action.startswith("op:start:"):
+            op_type = _parse_operation_type(action.split(":", maxsplit=2)[2])
+            context.user_data["op"] = {
+                "op_type": op_type.value,
+                "sku": None,
+                "from_location": None,
+                "to_location": None,
+            }
+            context.user_data["state"] = UserState.SELECT_LOCATION
+            prompt = "Выберите локацию назначения" if op_type == OperationType.IN_ else "Выберите исходную локацию"
+            await update.message.reply_text(prompt, reply_markup=_locations_menu("opfrom"))
+            return
+
     if state == UserState.SEARCH_ITEM:
         mode = context.user_data.get("search_mode", "balance")
         context.user_data["state"] = UserState.SELECT_ITEM
@@ -511,6 +574,7 @@ async def items_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("locations", locations_command))
     application.add_handler(CommandHandler("items", items_command))
