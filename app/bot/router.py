@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -20,6 +21,7 @@ from app.services.rbac import can_access_admin, can_access_stock, get_role
 from app.services.storage import NotFoundError, ValidationError, get_storage
 
 PAGE_SIZE = 5
+logger = logging.getLogger(__name__)
 
 
 def _role_name(role: Role) -> str:
@@ -120,18 +122,21 @@ def _normalize_text(text: str) -> str:
 
 def _menu_action_from_text(text: str) -> str | None:
     normalized = _normalize_text(text)
-    mapping = {
-        "остатки": "stock:balances",
-        "взять товар": "op:start:OUT",
-        "выдача": "op:start:OUT",
-        "расход": "op:start:OUT",
-        "приход": "op:start:IN",
-        "брак": "op:start:WRITE_OFF",
-        "списание": "op:start:WRITE_OFF",
-        "перемещение": "op:start:MOVE",
-        "склад": "menu:stock",
-    }
-    return mapping.get(normalized)
+
+    if normalized in {"остатки", "остаток"} or "остатк" in normalized:
+        return "stock:balances"
+    if normalized in {"взять товар", "выдача", "расход"} or normalized.startswith("взять товар"):
+        return "op:start:OUT"
+    if normalized in {"приход", "поступление"} or normalized.startswith("приход"):
+        return "op:start:IN"
+    if normalized in {"брак", "списание"} or "брак" in normalized or "списан" in normalized:
+        return "op:start:WRITE_OFF"
+    if normalized in {"перемещение", "переместить"} or "перемещ" in normalized:
+        return "op:start:MOVE"
+    if normalized in {"склад", "меню", "главное меню"}:
+        return "menu:stock"
+
+    return None
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -370,6 +375,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     state = context.user_data.get("state", UserState.IDLE)
     text = (update.message.text or "").strip()
+    logger.warning("ROUTER HIT text=%r state=%s", text, state)
 
     if state == UserState.IDLE:
         action = _menu_action_from_text(text)
@@ -453,6 +459,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    logger.warning("FALLBACK HIT text=%r state=%s", text, state)
     await update.message.reply_text(UNKNOWN_ACTION_TEXT)
 
 
