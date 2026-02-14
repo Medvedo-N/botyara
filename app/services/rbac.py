@@ -24,4 +24,4 @@ def can_access_admin(role: Role) -> bool:
 
 
 def can_access_stock(role: Role) -> bool:
-    return role in {Role.SUPERADMIN, Role.ADMIN, Role.TECH}
+    return role in {Role.SUPERADMIN, Role.ADMIN, Role.TECH, Role.VIEWER}

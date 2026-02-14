@@ -104,3 +104,93 @@ curl http://localhost:8080/healthz
 curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
   -d "url=https://<your-cloud-run-url>/webhook"
 ```
+
+## GitHub Actions Cloud Run CD
+
+This repo includes `.github/workflows/deploy-cloudrun.yml` for automatic deploy on push to `main`.
+
+### Required GitHub repository variables
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION` (example: `europe-west1`)
+- `WIF_PROVIDER` (full Workload Identity Provider resource name)
+- `WIF_SA` (service account email, e.g. `github-deploy@<project>.iam.gserviceaccount.com`)
+
+### Required GCP setup
+
+- Enable Cloud Run API.
+- Create Artifact Registry repository `botyara`.
+- Create Workload Identity Pool and GitHub OIDC Provider.
+- Grant deploy service account at least:
+  - `roles/run.admin`
+  - `roles/artifactregistry.writer`
+  - `roles/iam.serviceAccountUser`
+
+The workflow authenticates with GCP via OIDC (no long-lived JSON key), builds and pushes Docker image to Artifact Registry, and deploys service `botyara` to Cloud Run.
+
+## CI quality gate
+
+`/.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
+
+- `ruff check app tests`
+- `python -m unittest discover -s tests -p 'test_*.py'`
+
+## Cloud Run deploy variables/secrets
+
+For `/.github/workflows/deploy-cloudrun.yml` configure repository **Variables**:
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `WIF_PROVIDER`
+- `WIF_SA`
+- `GOOGLE_SHEETS_ID`
+
+Configure repository **Secrets**:
+
+- `BOT_TOKEN`
+
+Then set Cloud Run secret/env (via deploy step or Cloud Run console) so runtime has:
+
+- `BOT_TOKEN`
+- `GOOGLE_SHEETS_ID`
+- `STORAGE_BACKEND=sheets`
+- `LOG_LEVEL=INFO`
+
+## P0 reliability notes (v2.0-fixed+)
+
+### Idempotency in production
+
+- Operation `op_id` is deterministic in bot handler (`update_id + user + action payload hash`).
+- Storage checks existing `op_id` in `movements` before apply.
+- Replayed webhook/update returns previously computed balance (no second write).
+
+### Sheets concurrency (optimistic lock)
+
+- `balances` sheet uses `row_version` in column `D`.
+- Apply algorithm:
+  1. read balances + versions
+  2. compute new values
+  3. verify hash/version snapshot is unchanged
+  4. write updated balances with incremented `row_version`
+  5. on conflict: retry up to 3 times, then fail with retry message
+
+### Source of truth
+
+- `movements` is authoritative operation journal (`IN|OUT|MOVE|WRITE_OFF`).
+- Every write operation appends one row to `movements`.
+- `balances` is a cached projection for fast reads.
+
+### Admin bot commands (P0)
+
+- `/users list`
+- `/users add <tg_id> <superadmin|admin|tech|viewer>`
+- `/users block <tg_id>`
+- `/users unblock <tg_id>`
+- `/locations list`
+- `/locations add <location_id> <name>`
+- `/locations rename <location_id> <new_name>`
+- `/locations archive <location_id>`
+- `/items list`
+- `/items add <sku> <name> <unit>`
+- `/items rename <sku> <new_name>`
+- `/items archive <sku>`

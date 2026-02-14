@@ -1,0 +1,60 @@
+name: CI/CD: Deploy Cloud Run
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SA }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker to push to Artifact Registry
+        run: |
+          gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build & Push Docker Image
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: botyara
+          SHA: ${{ github.sha }}
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/botyara/${SERVICE}:${SHA}"
+          docker build -t "${IMAGE}" .
+          docker push "${IMAGE}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: botyara
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ env.IMAGE }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          env_vars: |
+            ENV=prod
+            LOG_LEVEL=INFO
+            STORAGE_BACKEND=sheets
+            GOOGLE_SHEETS_ID=${{ vars.GOOGLE_SHEETS_ID }}
+
+      - name: Output deployed URL
+        run: echo "Deployed: ${{ steps.deploy.outputs.url }}"

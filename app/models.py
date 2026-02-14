@@ -11,6 +11,7 @@ class Role(str, Enum):
     SUPERADMIN = "superadmin"
     ADMIN = "admin"
     TECH = "tech"
+    VIEWER = "viewer"
     NO_ACCESS = "no_access"
 
 
@@ -44,7 +45,7 @@ class Item(BaseModel):
 class Balance(BaseModel):
     location_id: str
     sku: str
-    qty: float = Field(default=0, ge=0)
+    qty: int = Field(default=0, ge=0)
 
 
 class Operation(BaseModel):
@@ -52,7 +53,7 @@ class Operation(BaseModel):
     ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     op_type: OperationType
     sku: str
-    qty: float = Field(gt=0)
+    qty: int = Field(gt=0)
     user_tg_id: int
     from_location: Optional[str] = None
     to_location: Optional[str] = None
@@ -64,7 +65,7 @@ class LedgerRow(BaseModel):
     op_id: str
     op_type: OperationType
     sku: str
-    qty: float
+    qty: int
     from_location: Optional[str] = None
     to_location: Optional[str] = None
     user_tg_id: int
