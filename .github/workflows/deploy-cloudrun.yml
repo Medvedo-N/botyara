@@ -3,6 +3,7 @@ name: CI/CD: Deploy Cloud Run
 on:
   push:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -49,6 +50,11 @@ jobs:
           region: ${{ vars.GCP_REGION }}
           image: ${{ env.IMAGE }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
+          env_vars: |
+            ENV=prod
+            LOG_LEVEL=INFO
+            STORAGE_BACKEND=sheets
+            GOOGLE_SHEETS_ID=${{ vars.GOOGLE_SHEETS_ID }}
 
       - name: Output deployed URL
         run: echo "Deployed: ${{ steps.deploy.outputs.url }}"

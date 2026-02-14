@@ -310,7 +310,7 @@ async def _execute_operation(update: Update, context: ContextTypes.DEFAULT_TYPE)
             op_id=str(uuid4()),
             op_type=_parse_operation_type(op_data["op_type"]),
             sku=str(op_data["sku"]),
-            qty=float(op_data["qty"]),
+            qty=int(op_data["qty"]),
             from_location=op_data.get("from_location"),
             to_location=op_data.get("to_location"),
             user_tg_id=user.id,
@@ -346,9 +346,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if state == UserState.INPUT_QTY:
         try:
-            qty = float(text.replace(",", "."))
+            qty = int(text.strip())
         except ValueError:
-            await update.message.reply_text("Введите корректное число")
+            await update.message.reply_text("Введите целое число больше нуля")
             return
 
         if qty <= 0:

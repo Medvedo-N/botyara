@@ -127,3 +127,31 @@ This repo includes `.github/workflows/deploy-cloudrun.yml` for automatic deploy 
   - `roles/iam.serviceAccountUser`
 
 The workflow authenticates with GCP via OIDC (no long-lived JSON key), builds and pushes Docker image to Artifact Registry, and deploys service `botyara` to Cloud Run.
+
+## CI quality gate
+
+`/.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
+
+- `ruff check app tests`
+- `python -m unittest discover -s tests -p 'test_*.py'`
+
+## Cloud Run deploy variables/secrets
+
+For `/.github/workflows/deploy-cloudrun.yml` configure repository **Variables**:
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `WIF_PROVIDER`
+- `WIF_SA`
+- `GOOGLE_SHEETS_ID`
+
+Configure repository **Secrets**:
+
+- `BOT_TOKEN`
+
+Then set Cloud Run secret/env (via deploy step or Cloud Run console) so runtime has:
+
+- `BOT_TOKEN`
+- `GOOGLE_SHEETS_ID`
+- `STORAGE_BACKEND=sheets`
+- `LOG_LEVEL=INFO`

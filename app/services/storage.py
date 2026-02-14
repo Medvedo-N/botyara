@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from app.models import Balance, Item, LedgerRow, Location, Operation, OperationType, Role, User
 from app.sheets_client import get_sheets_service
@@ -210,7 +210,7 @@ class MockStorageAdapter(StorageAdapter):
 class GoogleSheetsStorageAdapter(StorageAdapter):
     def __init__(self, spreadsheet_id: str):
         if not spreadsheet_id:
-            raise StorageError("SPREADSHEET_ID is required for sheets backend")
+            raise StorageError("GOOGLE_SHEETS_ID/SPREADSHEET_ID is required for sheets backend")
         self.spreadsheet_id = spreadsheet_id
         self.service = get_sheets_service()
 
@@ -269,7 +269,7 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
             if len(row) < 3:
                 continue
             if str(row[0]) == location_id and str(row[1]) == sku:
-                return Balance(location_id=location_id, sku=sku, qty=float(row[2]))
+                return Balance(location_id=location_id, sku=sku, qty=int(float(row[2])))
         return Balance(location_id=location_id, sku=sku, qty=0)
 
     def apply_operation(self, op: Operation) -> Balance:
@@ -291,7 +291,7 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
                 raise ValidationError("Для прихода нужна to_location")
             self._ensure_active_location(op.to_location)
             key = (op.to_location, op.sku)
-            balances[key] = balances.get(key, 0.0) + op.qty
+            balances[key] = balances.get(key, 0) + op.qty
             self._append_ledger(op)
             self._write_balances_map(balances)
             return Balance(location_id=op.to_location, sku=op.sku, qty=balances[key])
@@ -301,7 +301,7 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
                 raise ValidationError("Для выдачи/списания нужна from_location")
             self._ensure_active_location(op.from_location)
             key = (op.from_location, op.sku)
-            current = balances.get(key, 0.0)
+            current = balances.get(key, 0)
             if op.qty > current:
                 raise ValidationError("Недостаточно остатка")
             balances[key] = current - op.qty
@@ -318,11 +318,11 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
             self._ensure_active_location(op.to_location)
             source_key = (op.from_location, op.sku)
             target_key = (op.to_location, op.sku)
-            current_source = balances.get(source_key, 0.0)
+            current_source = balances.get(source_key, 0)
             if op.qty > current_source:
                 raise ValidationError("Недостаточно остатка")
             balances[source_key] = current_source - op.qty
-            balances[target_key] = balances.get(target_key, 0.0) + op.qty
+            balances[target_key] = balances.get(target_key, 0) + op.qty
             self._append_ledger(op)
             self._write_balances_map(balances)
             return Balance(location_id=op.to_location, sku=op.sku, qty=balances[target_key])
@@ -346,7 +346,7 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
                 op_id=str(row[1]),
                 op_type=OperationType(str(row[2])),
                 sku=str(row[3]),
-                qty=float(row[4]),
+                qty=int(float(row[4])),
                 from_location=str(row[5]) if row[5] else None,
                 to_location=str(row[6]) if row[6] else None,
                 user_tg_id=int(row[7]),
@@ -420,16 +420,16 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
         if sku not in {item.sku for item in items}:
             raise NotFoundError("Товар не найден или неактивен")
 
-    def _read_balances_map(self) -> dict[tuple[str, str], float]:
+    def _read_balances_map(self) -> dict[tuple[str, str], int]:
         rows = self._read("balances!A2:C")
-        out: dict[tuple[str, str], float] = {}
+        out: dict[tuple[str, str], int] = {}
         for row in rows:
             if len(row) < 3:
                 continue
-            out[(str(row[0]), str(row[1]))] = float(row[2])
+            out[(str(row[0]), str(row[1]))] = int(float(row[2]))
         return out
 
-    def _write_balances_map(self, balances: dict[tuple[str, str], float]) -> None:
+    def _write_balances_map(self, balances: dict[tuple[str, str], int]) -> None:
         rows = [[location_id, sku, qty] for (location_id, sku), qty in balances.items()]
         rows.sort(key=lambda row: (row[0], row[1]))
         self._update("balances!A2:C", rows)
@@ -446,7 +446,7 @@ class GoogleSheetsStorageAdapter(StorageAdapter):
                 op_id=str(row[1]),
                 op_type=OperationType(str(row[2])),
                 sku=str(row[3]),
-                qty=float(row[4]),
+                qty=int(float(row[4])),
                 from_location=str(row[5]) if row[5] else None,
                 to_location=str(row[6]) if row[6] else None,
                 user_tg_id=int(row[7]),
@@ -484,7 +484,7 @@ def get_storage() -> StorageAdapter:
 
     backend = os.getenv("STORAGE_BACKEND", "mock").strip().lower()
     if backend == "sheets":
-        _STORAGE = GoogleSheetsStorageAdapter(spreadsheet_id=os.getenv("SPREADSHEET_ID", ""))
+        _STORAGE = GoogleSheetsStorageAdapter(spreadsheet_id=os.getenv("GOOGLE_SHEETS_ID") or os.getenv("SPREADSHEET_ID", ""))
     elif backend == "appsscript":
         raise StorageError("appsscript backend is not implemented yet")
     else:
