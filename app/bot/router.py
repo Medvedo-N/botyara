@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+import hashlib
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -27,6 +27,7 @@ def _role_name(role: Role) -> str:
         Role.SUPERADMIN: "superadmin",
         Role.ADMIN: "admin",
         Role.TECH: "tech",
+        Role.VIEWER: "viewer",
         Role.NO_ACCESS: "нет доступа",
     }
     return mapping[role]
@@ -307,7 +308,7 @@ async def _execute_operation(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         op = Operation(
-            op_id=str(uuid4()),
+            op_id=_build_op_id(update, op_data),
             op_type=_parse_operation_type(op_data["op_type"]),
             sku=str(op_data["sku"]),
             qty=int(op_data["qty"]),
@@ -392,7 +393,126 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(UNKNOWN_ACTION_TEXT)
 
 
+
+def _build_op_id(update: Update, op_data: dict) -> str:
+    user_id = update.effective_user.id if update.effective_user else 0
+    update_id = update.update_id or 0
+    action = op_data.get("op_type", "")
+    payload = f"{update_id}:{user_id}:{action}:{op_data.get('sku')}:{op_data.get('from_location')}:{op_data.get('to_location')}:{op_data.get('qty')}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    role = get_role(update.effective_user.id)
+    if not can_access_admin(role):
+        await update.message.reply_text(NO_ACCESS_TEXT)
+        return
+
+    args = context.args
+    storage = get_storage()
+    if not args or args[0] == "list":
+        users = storage.list_users()
+        text = "\n".join([f"{u.tg_id} | {u.role.value} | {'active' if u.active else 'blocked'}" for u in users[:40]]) or "Список пользователей пуст"
+        await update.message.reply_text(text)
+        return
+
+    cmd = args[0]
+    try:
+        if cmd == "add" and len(args) >= 3:
+            tg_id = int(args[1])
+            role_val = Role(args[2].lower())
+            user = storage.add_or_update_user(tg_id=tg_id, role=role_val)
+            await update.message.reply_text(f"Пользователь добавлен: {user.tg_id} -> {user.role.value}")
+            return
+        if cmd in {"block", "unblock"} and len(args) >= 2:
+            tg_id = int(args[1])
+            storage.set_user_active(tg_id=tg_id, active=(cmd == "unblock"))
+            await update.message.reply_text("Готово")
+            return
+    except Exception as exc:
+        await update.message.reply_text(str(exc))
+        return
+
+    await update.message.reply_text("Использование: /users list | /users add <tg_id> <superadmin|admin|tech> | /users block <tg_id> | /users unblock <tg_id>")
+
+
+async def locations_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    role = get_role(update.effective_user.id)
+    if not can_access_admin(role):
+        await update.message.reply_text(NO_ACCESS_TEXT)
+        return
+
+    args = context.args
+    storage = get_storage()
+    if not args or args[0] == "list":
+        locs = storage.list_locations()
+        text = "\n".join([f"{loc.location_id} | {loc.location_name}" for loc in locs]) or "Локации пусты"
+        await update.message.reply_text(text)
+        return
+
+    try:
+        if args[0] == "add" and len(args) >= 3:
+            loc = storage.add_location(args[1], " ".join(args[2:]))
+            await update.message.reply_text(f"Локация добавлена: {loc.location_id}")
+            return
+        if args[0] == "rename" and len(args) >= 3:
+            loc = storage.rename_location(args[1], " ".join(args[2:]))
+            await update.message.reply_text(f"Локация переименована: {loc.location_id}")
+            return
+        if args[0] == "archive" and len(args) >= 2:
+            storage.archive_location(args[1])
+            await update.message.reply_text("Локация архивирована")
+            return
+    except Exception as exc:
+        await update.message.reply_text(str(exc))
+        return
+
+    await update.message.reply_text("Использование: /locations list | /locations add <id> <name> | /locations rename <id> <new_name> | /locations archive <id>")
+
+
+async def items_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    role = get_role(update.effective_user.id)
+    if not can_access_admin(role):
+        await update.message.reply_text(NO_ACCESS_TEXT)
+        return
+
+    args = context.args
+    storage = get_storage()
+    if not args or args[0] == "list":
+        items, _ = storage.search_items(query="", page=0, page_size=30)
+        text = "\n".join([f"{i.sku} | {i.name} | {i.unit}" for i in items]) or "Номенклатура пуста"
+        await update.message.reply_text(text)
+        return
+
+    try:
+        if args[0] == "add" and len(args) >= 4:
+            item = storage.add_item(args[1], " ".join(args[2:-1]), unit=args[-1])
+            await update.message.reply_text(f"Товар добавлен: {item.sku}")
+            return
+        if args[0] == "rename" and len(args) >= 3:
+            item = storage.rename_item(args[1], " ".join(args[2:]))
+            await update.message.reply_text(f"Товар переименован: {item.sku}")
+            return
+        if args[0] == "archive" and len(args) >= 2:
+            storage.archive_item(args[1])
+            await update.message.reply_text("Товар архивирован")
+            return
+    except Exception as exc:
+        await update.message.reply_text(str(exc))
+        return
+
+    await update.message.reply_text("Использование: /items list | /items add <sku> <name> <unit> | /items rename <sku> <new_name> | /items archive <sku>")
+
 def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("locations", locations_command))
+    application.add_handler(CommandHandler("items", items_command))
     application.add_handler(CallbackQueryHandler(callback_router))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))

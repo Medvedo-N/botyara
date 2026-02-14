@@ -155,3 +155,42 @@ Then set Cloud Run secret/env (via deploy step or Cloud Run console) so runtime 
 - `GOOGLE_SHEETS_ID`
 - `STORAGE_BACKEND=sheets`
 - `LOG_LEVEL=INFO`
+
+## P0 reliability notes (v2.0-fixed+)
+
+### Idempotency in production
+
+- Operation `op_id` is deterministic in bot handler (`update_id + user + action payload hash`).
+- Storage checks existing `op_id` in `movements` before apply.
+- Replayed webhook/update returns previously computed balance (no second write).
+
+### Sheets concurrency (optimistic lock)
+
+- `balances` sheet uses `row_version` in column `D`.
+- Apply algorithm:
+  1. read balances + versions
+  2. compute new values
+  3. verify hash/version snapshot is unchanged
+  4. write updated balances with incremented `row_version`
+  5. on conflict: retry up to 3 times, then fail with retry message
+
+### Source of truth
+
+- `movements` is authoritative operation journal (`IN|OUT|MOVE|WRITE_OFF`).
+- Every write operation appends one row to `movements`.
+- `balances` is a cached projection for fast reads.
+
+### Admin bot commands (P0)
+
+- `/users list`
+- `/users add <tg_id> <superadmin|admin|tech|viewer>`
+- `/users block <tg_id>`
+- `/users unblock <tg_id>`
+- `/locations list`
+- `/locations add <location_id> <name>`
+- `/locations rename <location_id> <new_name>`
+- `/locations archive <location_id>`
+- `/items list`
+- `/items add <sku> <name> <unit>`
+- `/items rename <sku> <new_name>`
+- `/items archive <sku>`

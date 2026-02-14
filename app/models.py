@@ -11,6 +11,7 @@ class Role(str, Enum):
     SUPERADMIN = "superadmin"
     ADMIN = "admin"
     TECH = "tech"
+    VIEWER = "viewer"
     NO_ACCESS = "no_access"
 
 
