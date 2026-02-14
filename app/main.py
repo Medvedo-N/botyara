@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from app.handlers_admin import sheet_admin_cmd
+from app.handlers_sheet import sheet_command
 
 from app.config import VERSION, TELEGRAM_TOKEN, SPREADSHEET_ID
 from app.sheets_client import read_range
@@ -16,13 +18,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def sheet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    values = read_range(SPREADSHEET_ID, "A1")
-    a1 = values[0][0] if values and values[0] else "(пусто)"
-    await update.message.reply_text(f"A1: {a1}")
-
-
-@app.on_event("startup")
 async def startup():
     global telegram_app
 
