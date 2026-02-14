@@ -28,7 +28,7 @@ async def startup():
 
     telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CommandHandler("sheet", sheet_command))
+    telegram_app.add_handler(CommandHandler("sheet", sheet_admin_cmd))
 
     await telegram_app.initialize()
 
