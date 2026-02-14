@@ -56,5 +56,6 @@ jobs:
             STORAGE_BACKEND=sheets
             GOOGLE_SHEETS_ID=${{ vars.GOOGLE_SHEETS_ID }}
 
-      - name: Output deployed URL
-        run: echo "Deployed: ${{ steps.deploy.outputs.url }}"
+            - name: Output deployed URL
+        run: |
+          echo Deployed: ${{ steps.deploy.outputs.url }}
