@@ -1,6 +1,7 @@
 import os
 
-VERSION = "2.0-fixed"
+VERSION = "2.0-fixed+1"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "TEST_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "TEST_SHEET_ID")
+
