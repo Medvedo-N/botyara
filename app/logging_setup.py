@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 
+from app.config import get_settings
 
-def setup_logging() -> logging.Logger:
-    logger = logging.getLogger("botyara")
-    if logger.handlers:
-        return logger
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    return logger
+
+def setup_logging() -> None:
+    settings = get_settings()
+    logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO), format='%(message)s')
