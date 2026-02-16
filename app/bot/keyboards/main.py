@@ -7,6 +7,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton('Приход'), KeyboardButton('Взять')],
             [KeyboardButton('Перемещение'), KeyboardButton('Брак')],
             [KeyboardButton('Остатки')],
+            [KeyboardButton('❌ Отмена')],
         ],
         resize_keyboard=True,
     )
