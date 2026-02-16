@@ -63,15 +63,21 @@ class GoogleSheetsStorage(StoragePort):
 
         self._retry(_do)
 
-
     @staticmethod
     def _normalize_key(value: str) -> str:
         return value.strip().lower()
 
+    @staticmethod
+    def _parse_notify(value: str | None) -> bool:
+        if value is None:
+            return False
+        normalized = value.strip().lower()
+        return normalized in {'true', '1', 'yes', 'y', 'да', 'д'}
+
     def _find_balance_row(self, item: str, location: str) -> int | None:
         target_item = self._normalize_key(item)
         target_location = self._normalize_key(location)
-        rows = self._read('balances!A:C')
+        rows = self._read('balances!A:E')
         for idx, row in enumerate(rows, start=1):
             if len(row) < 2:
                 continue
@@ -101,10 +107,8 @@ class GoogleSheetsStorage(StoragePort):
         to_location: str = '',
     ) -> None:
         ts_utc = datetime.now(timezone.utc).isoformat()
-        self._append(
-            'ledger!A:I',
-            [op_id, ts_utc, op_type, item, location, quantity, from_location, to_location, user_id],
-        )
+        self._append('ledger!A:I', [op_id, ts_utc, op_type, item, location, quantity, from_location, to_location, user_id])
+
     def get_item(self, name: str) -> Item | None:
         for row in self._read('items!A:B'):
             if len(row) >= 1 and self._normalize_key(row[0]) == self._normalize_key(name):
@@ -193,7 +197,7 @@ class GoogleSheetsStorage(StoragePort):
         target_item = self._normalize_key(item)
         target_location = self._normalize_key(location)
         current = 0
-        rows = self._read('balances!A:C')
+        rows = self._read('balances!A:E')
         for row in rows:
             if len(row) >= 3 and self._normalize_key(row[0]) == target_item and self._normalize_key(row[1]) == target_location:
                 try:
@@ -202,29 +206,47 @@ class GoogleSheetsStorage(StoragePort):
                     current = 0
         return current
 
+    def get_item_limits(self, item: str, location: str) -> tuple[int | None, bool]:
+        target_item = self._normalize_key(item)
+        target_location = self._normalize_key(location)
+        rows = self._read('balances!A:E')
+        min_qty: int | None = None
+        notify = False
+        for row in rows:
+            if len(row) >= 2 and self._normalize_key(row[0]) == target_item and self._normalize_key(row[1]) == target_location:
+                if len(row) >= 4:
+                    try:
+                        min_qty = int(row[3])
+                    except (ValueError, TypeError):
+                        min_qty = None
+                if len(row) >= 5:
+                    notify = self._parse_notify(row[4])
+        return min_qty, notify
+
     def _upsert_balance(self, item: str, location: str, quantity: int) -> None:
         row_num = self._find_balance_row(item, location)
         if row_num is not None:
+
             def _do() -> Any:
                 return (
                     self._service.spreadsheets()
                     .values()
                     .update(
                         spreadsheetId=self.spreadsheet_id,
-                        range=f'balances!A{row_num}:C{row_num}',
+                        range=f'balances!C{row_num}',
                         valueInputOption='USER_ENTERED',
-                        body={'values': [[item, location, quantity]]},
+                        body={'values': [[quantity]]},
                     )
                     .execute(num_retries=self.retries)
                 )
 
             self._retry(_do)
             return
-        self._append('balances!A:C', [item, location, quantity])
+        self._append('balances!A:E', [item, location, quantity, '', 'false'])
 
     def list_stock(self) -> list[StockEntry]:
         result: list[StockEntry] = []
-        for row in self._read('balances!A:C'):
+        for row in self._read('balances!A:E'):
             if len(row) < 3:
                 continue
             try:

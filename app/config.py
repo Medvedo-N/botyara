@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str | None = None
     PORT: int = 8080
     VERSION: str = '2.0-fixed'
+    LOW_STOCK_NOTIFY_CHAT_ID: int | None = None
+    LOW_STOCK_THROTTLE_MINUTES: int = 120
 
 
 @lru_cache(maxsize=1)

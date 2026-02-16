@@ -14,10 +14,18 @@ class MemoryStorage(StoragePort):
             ('Фильтр', 'main'): 20,
             ('Масло', 'main'): 10,
         }
+        self._limits: dict[tuple[str, str], tuple[int | None, bool]] = {
+            ('фильтр', 'main'): (5, True),
+            ('масло', 'main'): (5, True),
+        }
         self._roles: dict[int, Role] = {}
         self._op_results: dict[str, tuple[str, str, int]] = {}
         if superadmin_tg_id:
             self._roles[superadmin_tg_id] = Role.OWNER
+
+    @staticmethod
+    def _norm(value: str) -> str:
+        return value.strip().lower()
 
     def get_item(self, name: str) -> Item | None:
         return self._items.get(name)
@@ -78,6 +86,9 @@ class MemoryStorage(StoragePort):
 
     def get_stock(self, item: str, location: str) -> int:
         return self._stock.get((item, location), 0)
+
+    def get_item_limits(self, item: str, location: str) -> tuple[int | None, bool]:
+        return self._limits.get((self._norm(item), self._norm(location)), (None, False))
 
     def list_stock(self) -> list[StockEntry]:
         return [StockEntry(name=item, location=location, quantity=qty) for (item, location), qty in sorted(self._stock.items())]
