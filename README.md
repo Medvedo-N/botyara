@@ -67,12 +67,12 @@ Cloud Run использует порт `8080` через `${PORT:-8080}` в `Do
 
 Роли:
 
-- `owner`
+- `dev`
+- `senior_manager`
 - `manager`
-- `storekeeper`
-- `viewer`
+- `user`
 
-`SUPERADMIN_TG_ID` всегда работает как `owner`.
+`SUPERADMIN_TG_ID` всегда работает как `dev`.
 
 Права задаются централизованно в `app/services/rbac.py`.
 
@@ -88,6 +88,35 @@ Cloud Run использует порт `8080` через `${PORT:-8080}` в `Do
 4. Fallback
 
 В логах добавлены события `ROUTER HIT` и `FALLBACK HIT` для дебага маршрутизации.
+
+## Диагностика Cloud Run + Telegram webhook
+
+Проверить, что активен нужный revision и webhook указывает в текущий Cloud Run URL:
+
+```bash
+# Cloud Run
+gcloud run services describe ufc-warehouse-bot --region=europe-west1 --format="value(status.url)"
+gcloud run services describe ufc-warehouse-bot --region=europe-west1 --format="value(status.latestReadyRevisionName)"
+gcloud run services describe ufc-warehouse-bot --region=europe-west1 --format="value(spec.template.spec.containers[0].env)"
+
+# Telegram webhook
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"
+```
+
+Ожидаемое состояние:
+
+- `getWebhookInfo.url == <Cloud Run status.url>/webhook`.
+- `latestReadyRevisionName` соответствует последнему деплою.
+
+Принудительный фикс (если роутинг не совпадает с кодом):
+
+```bash
+gcloud run deploy ufc-warehouse-bot --source . --region=europe-west1 --allow-unauthenticated
+
+SERVICE_URL="$(gcloud run services describe ufc-warehouse-bot --region=europe-west1 --format='value(status.url)')"
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" -d "url=${SERVICE_URL}/webhook"
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"
+```
 
 ## Тесты
 

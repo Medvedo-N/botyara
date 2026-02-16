@@ -34,6 +34,9 @@ class MemoryStorage(StoragePort):
             items = [x for x in items if x.is_active]
         return items
 
+    def list_active_items(self) -> list[Item]:
+        return sorted(self.list_items(active_only=True), key=lambda item: item.name.lower())
+
     def add_item(self, name: str, *, norm: int, crit_min: int, qty: int, is_active: bool = True) -> None:
         item = self.get_item(name)
         if item:

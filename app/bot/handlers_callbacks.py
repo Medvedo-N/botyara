@@ -5,7 +5,14 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from app.bot.fsm.scenarios import parse_positive_int
 from app.bot.fsm.states import DialogState
-from app.bot.handlers_text import _menu_for_user, _reset_add_item_state, _reset_all, _reset_take_state, _reset_user_add_state
+from app.bot.handlers_text import (
+    _menu_for_user,
+    _reset_add_item_state,
+    _reset_all,
+    _reset_take_state,
+    _reset_user_add_state,
+    build_stock_page,
+)
 from app.bot.keyboards.take import take_confirm_keyboard, take_qty_keyboard
 from app.models.domain import MovementRequest, Role
 
@@ -27,6 +34,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         _reset_all(context)
         context.user_data['state'] = DialogState.IDLE.value
         await query.edit_message_text('Сценарий отменён.')
+        await query.message.reply_text('Главное меню', reply_markup=_menu_for_user(context, user_id))
+        raise ApplicationHandlerStop
+
+    if data.startswith('stock:page:') or data.startswith('stock:refresh:'):
+        try:
+            page = int(data.split(':')[-1])
+        except ValueError:
+            page = 1
+        text, markup, _ = build_stock_page(context, page)
+        await query.edit_message_text(text, reply_markup=markup)
+        raise ApplicationHandlerStop
+
+    if data == 'stock:menu':
+        _reset_all(context)
+        context.user_data['state'] = DialogState.IDLE.value
+        await query.edit_message_text('Возврат в меню.')
         await query.message.reply_text('Главное меню', reply_markup=_menu_for_user(context, user_id))
         raise ApplicationHandlerStop
 

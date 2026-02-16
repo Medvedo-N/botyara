@@ -4,7 +4,7 @@ import asyncio
 
 from telegram import Bot
 
-from app.models.domain import MovementRequest, OperationResult, OperationType
+from app.models.domain import Item, MovementRequest, OperationResult, OperationType
 from app.services.notifications import LowStockNotifier
 from app.services.reorder import ReorderService
 from app.storage.interface import StoragePort
@@ -53,6 +53,9 @@ class InventoryService:
                 marker = '🔴'
             lines.append(f"{marker} {entry.name} — {entry.quantity} (норма {entry.norm}, крит {entry.crit_min})")
         return '\n'.join(lines)
+
+    def list_active_items(self) -> list[Item]:
+        return self.storage.list_active_items()
 
     def _ensure_stock(self, item: str, quantity: int) -> None:
         current = self.storage.get_stock(item=item)

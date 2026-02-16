@@ -9,10 +9,12 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 from app.bot.fsm.scenarios import parse_inventory_input, parse_positive_int, parse_stock_item_input, start_state_for_action
 from app.bot.fsm.states import DialogState
 from app.bot.keyboards.main import main_menu
+from app.bot.keyboards.stock import stock_pagination_keyboard
 from app.bot.keyboards.take import take_confirm_keyboard, take_items_keyboard, take_qty_keyboard
 from app.models.domain import MovementRequest
 
 logger = logging.getLogger(__name__)
+PAGE_SIZE = 12
 
 
 def _stock_marker(qty: int, norm: int | None, crit: int | None) -> str:
@@ -42,6 +44,45 @@ def _reset_all(context: ContextTypes.DEFAULT_TYPE) -> None:
     _reset_take_state(context)
     _reset_add_item_state(context)
     _reset_user_add_state(context)
+
+
+def _format_stock_lines(rows) -> list[str]:
+    return [
+        f"{_stock_marker(entry.quantity, entry.norm, entry.crit_min)} {entry.name} — {entry.quantity} (норма {entry.norm}, крит {entry.crit_min})"
+        for entry in rows
+    ]
+
+
+def build_stock_page(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = PAGE_SIZE) -> tuple[str, InlineKeyboardMarkup | None, int]:
+    inventory = context.application.bot_data['inventory_service']
+    if not hasattr(inventory, 'storage'):
+        fallback = inventory.list_stock()
+        if fallback == 'Остатков нет.':
+            return 'Остатков нет.', None, 1
+        return fallback, None, 1
+
+    data = inventory.storage.list_stock()
+    if not data:
+        return 'Остатков нет.', None, 1
+    data = sorted(data, key=lambda item: item.name.lower())
+    lines = _format_stock_lines(data)
+
+    total_pages = max((len(lines) + page_size - 1) // page_size, 1)
+    safe_page = min(max(page, 1), total_pages)
+    start = (safe_page - 1) * page_size
+    end = start + page_size
+    page_lines = lines[start:end]
+    header = f'Остатки (стр. {safe_page}/{total_pages}):'
+    text = f"{header}\n" + '\n'.join(page_lines)
+    markup = stock_pagination_keyboard(page=safe_page, total_pages=total_pages)
+    return text, markup, safe_page
+
+
+async def show_stock_list(update: Update, context: ContextTypes.DEFAULT_TYPE, *, page: int = 1) -> None:
+    if update.message is None:
+        return
+    text, markup, _ = build_stock_page(context, page)
+    await update.message.reply_text(text, reply_markup=markup or _menu_for_user(context, update.effective_user.id))
 
 
 async def fsm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -83,7 +124,12 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     normalized = _normalize_text(text)
     state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
 
-    logger.info('ROUTER HIT text=%s state=%s', normalized, state.value)
+    rbac_for_log = context.application.bot_data['rbac_service']
+    if hasattr(rbac_for_log, 'get_role'):
+        role = rbac_for_log.get_role(user_id).value
+    else:
+        role = 'unknown'
+    logger.info('ROUTER HIT text=%s state=%s role=%s', normalized, state.value, role)
 
     action = _menu_action(normalized)
     if action is not None:
@@ -109,6 +155,14 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await _start_take_flow(update, context, user_id)
             raise ApplicationHandlerStop
 
+        if action == 'STOCK':
+            _reset_all(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            rbac_service = context.application.bot_data['rbac_service']
+            rbac_service.require_permission(user_id, 'inventory.view')
+            await show_stock_list(update, context, page=1)
+            raise ApplicationHandlerStop
+
         if state != DialogState.IDLE:
             _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
@@ -116,7 +170,6 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['state'] = start_state_for_action(action).value
         prompts = {
             'IN': 'Введите приход: <товар>,<кол-во>',
-            'STOCK': 'Введите товар для остатков: <товар> (можно: товар,1 или товар:1)',
         }
         await update.message.reply_text(prompts[action], reply_markup=_menu_for_user(context, user_id))
         raise ApplicationHandlerStop
@@ -254,7 +307,8 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
-    logger.info('FALLBACK HIT text=%s', update.message.text)
+    state = context.user_data.get('state', DialogState.IDLE.value)
+    logger.info('FALLBACK HIT text=%s state=%s', update.message.text, state)
     await update.message.reply_text('Не понял запрос. Нажмите /help.', reply_markup=main_menu())
 
 
@@ -276,6 +330,6 @@ def _menu_action(normalized_text: str) -> str | None:
         return 'STOCK'
     if normalized_text.startswith('приход') or ' приход' in normalized_text or 'поступлен' in normalized_text:
         return 'IN'
-    if normalized_text.startswith('взять') or 'взять' in normalized_text or 'выдач' in normalized_text:
+    if normalized_text.startswith('взять') or 'взят' in normalized_text or 'выдач' in normalized_text:
         return 'OUT'
     return None
