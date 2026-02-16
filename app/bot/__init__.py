@@ -1,0 +1,3 @@
+from app.bot.router import register_handlers
+
+__all__ = ['register_handlers']

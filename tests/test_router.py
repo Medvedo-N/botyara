@@ -1,22 +1,19 @@
 import unittest
 
-from app.bot.router import _menu_action_from_text
+from app.bot.handlers_text import _menu_action, _normalize_text
 
 
-class RouterTextRoutingTests(unittest.TestCase):
-    def test_menu_text_variants_resolved(self):
-        self.assertEqual(_menu_action_from_text("Остатки"), "stock:balances")
-        self.assertEqual(_menu_action_from_text("📦 Остатки"), "stock:balances")
-        self.assertEqual(_menu_action_from_text("Приход"), "op:start:IN")
-        self.assertEqual(_menu_action_from_text("📥 Приход"), "op:start:IN")
-        self.assertEqual(_menu_action_from_text("Взять товар"), "op:start:OUT")
-        self.assertEqual(_menu_action_from_text("📄 Взять товар"), "op:start:OUT")
-        self.assertEqual(_menu_action_from_text("Брак"), "op:start:WRITE_OFF")
-        self.assertEqual(_menu_action_from_text("⚠️ Брак"), "op:start:WRITE_OFF")
+class RouterTests(unittest.TestCase):
+    def test_menu_actions(self):
+        self.assertEqual(_menu_action(_normalize_text('Приход')), 'IN')
+        self.assertEqual(_menu_action(_normalize_text('Взять')), 'OUT')
+        self.assertEqual(_menu_action(_normalize_text('Перемещение')), 'MOVE')
+        self.assertEqual(_menu_action(_normalize_text('Брак')), 'WRITE_OFF')
+        self.assertEqual(_menu_action(_normalize_text('Остатки')), 'STOCK')
 
-    def test_unknown_text_returns_none(self):
-        self.assertIsNone(_menu_action_from_text("непонятно"))
+    def test_unknown_action(self):
+        self.assertIsNone(_menu_action(_normalize_text('какой-то текст')))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
