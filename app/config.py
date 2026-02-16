@@ -1,9 +1,28 @@
-import os
+from __future__ import annotations
 
-VERSION = "2.0-fixed+2"
-ENV = os.getenv("ENV", "staging")
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+from functools import lru_cache
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
-SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_ID") or os.getenv("SPREADSHEET_ID", "TEST_SHEET_ID")
-APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL", "")
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
+
+    BOT_TOKEN: str = Field(min_length=1)
+    ENV: str = 'staging'
+    LOG_LEVEL: str = 'INFO'
+    STORAGE_BACKEND: str = 'memory'
+    SPREADSHEET_ID: str = ''
+    SUPERADMIN_TG_ID: int = 0
+    BASE_URL: str = ''
+    WEBHOOK_SECRET: str | None = None
+    PORT: int = 8080
+    VERSION: str = '2.0-fixed'
+    LOW_STOCK_NOTIFY_CHAT_ID: int | None = None
+    LOW_STOCK_THROTTLE_MINUTES: int = 120
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
