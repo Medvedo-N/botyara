@@ -18,7 +18,7 @@ class _FakeValues:
         self.appended = []
 
     def get(self, spreadsheetId, range):
-        return _FakeExec(lambda: {'values': self.rows if range in {'balances!A:E', 'balances!A:C'} else []})
+        return _FakeExec(lambda: {'values': self.rows if range in {'balances!A:D', 'balances!A:C'} else []})
 
     def update(self, spreadsheetId, range, valueInputOption, body):
         self.updated.append((range, body['values'][0]))
@@ -56,10 +56,10 @@ class SheetsStorageUpsertTests(unittest.TestCase):
         return storage
 
     def test_upsert_updates_only_qty_column_and_keeps_limits(self):
-        storage = self._storage_with_rows([['Фильтр', 'Main', '10', '5', 'true']])
-        storage._upsert_balance(' фильтр ', ' main ', 12)
+        storage = self._storage_with_rows([['Фильтр', '10', '5', 'true']])
+        storage._upsert_balance(' фильтр ', 12)
 
-        self.assertEqual(storage._service._sheets.values_api.updated, [('balances!C1', [12])])
+        self.assertEqual(storage._service._sheets.values_api.updated, [('balances!B1', [12])])
         self.assertEqual(storage._service._sheets.values_api.appended, [])
 
 

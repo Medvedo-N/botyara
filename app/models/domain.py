@@ -6,18 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class Role(str, Enum):
-    OWNER = 'owner'
+    DEV = 'dev'
+    SENIOR_MANAGER = 'senior_manager'
     MANAGER = 'manager'
-    STOREKEEPER = 'storekeeper'
-    VIEWER = 'viewer'
+    USER = 'user'
     NO_ACCESS = 'no_access'
 
 
 class OperationType(str, Enum):
     INBOUND = 'IN'
     OUTBOUND = 'OUT'
-    MOVE = 'MOVE'
-    WRITE_OFF = 'WRITE_OFF'
 
 
 class Item(BaseModel):
@@ -26,7 +24,6 @@ class Item(BaseModel):
 
 class StockEntry(BaseModel):
     name: str
-    location: str
     quantity: int = 0
 
 
@@ -34,8 +31,6 @@ class OperationResult(BaseModel):
     operation: OperationType
     item: str
     quantity: int
-    from_location: str | None = None
-    to_location: str | None = None
     balance: int
     op_id: str | None = None
 
@@ -45,6 +40,4 @@ class MovementRequest(BaseModel):
     quantity: int = Field(gt=0)
     user_id: int
     op_id: str | None = None
-    from_location: str | None = None
-    to_location: str | None = None
     comment: str | None = None

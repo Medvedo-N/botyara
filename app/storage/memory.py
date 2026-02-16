@@ -10,88 +10,71 @@ class MemoryStorage(StoragePort):
             'Фильтр': Item(name='Фильтр'),
             'Масло': Item(name='Масло'),
         }
-        self._stock: dict[tuple[str, str], int] = {
-            ('Фильтр', 'main'): 20,
-            ('Масло', 'main'): 10,
+        self._stock: dict[str, int] = {
+            'Фильтр': 20,
+            'Масло': 10,
         }
-        self._limits: dict[tuple[str, str], tuple[int | None, bool]] = {
-            ('фильтр', 'main'): (5, True),
-            ('масло', 'main'): (5, True),
+        self._limits: dict[str, tuple[int | None, bool]] = {
+            'фильтр': (5, True),
+            'масло': (5, True),
         }
         self._roles: dict[int, Role] = {}
-        self._op_results: dict[str, tuple[str, str, int]] = {}
+        self._op_results: dict[str, tuple[str, int]] = {}
         if superadmin_tg_id:
-            self._roles[superadmin_tg_id] = Role.OWNER
+            self._roles[superadmin_tg_id] = Role.DEV
 
     @staticmethod
     def _norm(value: str) -> str:
         return value.strip().lower()
 
     def get_item(self, name: str) -> Item | None:
-        return self._items.get(name)
+        for item_name, item in self._items.items():
+            if self._norm(item_name) == self._norm(name):
+                return item
+        return None
 
     def list_items(self) -> list[Item]:
         return list(self._items.values())
 
-    def add_inbound(self, item: str, quantity: int, to_location: str, user_id: int, op_id: str | None = None) -> int:
-        if op_id and op_id in self._op_results:
-            return self._op_results[op_id][2]
-        self._items.setdefault(item, Item(name=item))
-        key = (item, to_location)
-        self._stock[key] = self._stock.get(key, 0) + quantity
-        if op_id:
-            self._op_results[op_id] = (item, to_location, self._stock[key])
-        return self._stock[key]
+    def _resolve_item_name(self, item: str) -> str:
+        existing = self.get_item(item)
+        if existing:
+            return existing.name
+        self._items[item] = Item(name=item)
+        return item
 
-    def add_outbound(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int:
+    def add_inbound(self, item: str, quantity: int, user_id: int, op_id: str | None = None) -> int:
         if op_id and op_id in self._op_results:
-            return self._op_results[op_id][2]
-        key = (item, from_location)
-        current = self._stock.get(key, 0)
+            return self._op_results[op_id][1]
+        item_name = self._resolve_item_name(item)
+        self._stock[item_name] = self._stock.get(item_name, 0) + quantity
+        if op_id:
+            self._op_results[op_id] = (item_name, self._stock[item_name])
+        return self._stock[item_name]
+
+    def add_outbound(self, item: str, quantity: int, user_id: int, op_id: str | None = None) -> int:
+        if op_id and op_id in self._op_results:
+            return self._op_results[op_id][1]
+        item_name = self._resolve_item_name(item)
+        current = self._stock.get(item_name, 0)
         if current < quantity:
             raise ValueError('insufficient stock')
-        self._stock[key] = current - quantity
+        self._stock[item_name] = current - quantity
         if op_id:
-            self._op_results[op_id] = (item, from_location, self._stock[key])
-        return self._stock[key]
+            self._op_results[op_id] = (item_name, self._stock[item_name])
+        return self._stock[item_name]
 
-    def add_move(
-        self,
-        item: str,
-        quantity: int,
-        from_location: str,
-        to_location: str,
-        user_id: int,
-        op_id: str | None = None,
-    ) -> int:
-        if op_id and op_id in self._op_results:
-            return self._op_results[op_id][2]
-        if from_location == to_location:
-            raise ValueError('source and destination locations should differ')
+    def get_stock(self, item: str) -> int:
+        resolved = self.get_item(item)
+        if not resolved:
+            return 0
+        return self._stock.get(resolved.name, 0)
 
-        from_key = (item, from_location)
-        to_key = (item, to_location)
-        from_current = self._stock.get(from_key, 0)
-        if from_current < quantity:
-            raise ValueError('insufficient stock')
-
-        self._stock[from_key] = from_current - quantity
-        self._stock[to_key] = self._stock.get(to_key, 0) + quantity
-        if op_id:
-            self._op_results[op_id] = (item, to_location, self._stock[to_key])
-        return self._stock[to_key]
-
-    def add_write_off(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int:
-        return self.add_outbound(item=item, quantity=quantity, from_location=from_location, user_id=user_id, op_id=op_id)
-
-    def get_stock(self, item: str, location: str) -> int:
-        return self._stock.get((item, location), 0)
-
-    def get_item_limits(self, item: str, location: str) -> tuple[int | None, bool]:
-        return self._limits.get((self._norm(item), self._norm(location)), (None, False))
+    def get_item_limits(self, item: str) -> tuple[int | None, bool]:
+        return self._limits.get(self._norm(item), (None, False))
 
     def list_stock(self) -> list[StockEntry]:
-        return [StockEntry(name=item, location=location, quantity=qty) for (item, location), qty in sorted(self._stock.items())]
+        return [StockEntry(name=item, quantity=qty) for item, qty in sorted(self._stock.items())]
 
     def get_user_role(self, user_id: int) -> Role:
         return self._roles.get(user_id, Role.NO_ACCESS)

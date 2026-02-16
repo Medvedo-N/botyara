@@ -7,16 +7,13 @@ class RouterTests(unittest.TestCase):
     def test_menu_actions(self):
         self.assertEqual(_menu_action(_normalize_text('Приход')), 'IN')
         self.assertEqual(_menu_action(_normalize_text('Взять')), 'OUT')
-        self.assertEqual(_menu_action(_normalize_text('Перемещение')), 'MOVE')
-        self.assertEqual(_menu_action(_normalize_text('Брак')), 'WRITE_OFF')
         self.assertEqual(_menu_action(_normalize_text('Остатки')), 'STOCK')
+        self.assertEqual(_menu_action(_normalize_text('Пользователи')), 'USERS')
 
     def test_menu_actions_with_emoji_and_suffixes(self):
         self.assertEqual(_menu_action(_normalize_text('➕ Приход')), 'IN')
         self.assertEqual(_menu_action(_normalize_text('📦 Остатки')), 'STOCK')
         self.assertEqual(_menu_action(_normalize_text('Взять товар ✅')), 'OUT')
-        self.assertEqual(_menu_action(_normalize_text('⚠️ Списание')), 'WRITE_OFF')
-        self.assertEqual(_menu_action(_normalize_text('🔁 Перемещение между складами')), 'MOVE')
 
     def test_unknown_action(self):
         self.assertIsNone(_menu_action(_normalize_text('какой-то текст')))

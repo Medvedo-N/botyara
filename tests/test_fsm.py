@@ -26,9 +26,12 @@ class _FakeRbac:
     def require_permission(self, user_id, permission):
         return None
 
+    def has_permission(self, user_id, permission):
+        return True
+
 
 class _FakeInventory:
-    def get_stock(self, item: str, location: str = 'main'):
+    def get_stock(self, item: str):
         return 20
 
 

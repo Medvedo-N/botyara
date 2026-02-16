@@ -24,13 +24,10 @@ class LowStockNotifierTests(unittest.TestCase):
             notifier.maybe_notify_low_stock(
                 bot,
                 item='Мыло',
-                location='main',
                 prev_qty=6,
                 new_qty=5,
                 min_qty=5,
                 notify=True,
-                actor_user_id=42,
-                op_type='OUT',
             )
         )
         self.assertTrue(sent)
@@ -44,13 +41,10 @@ class LowStockNotifierTests(unittest.TestCase):
             notifier.maybe_notify_low_stock(
                 bot,
                 item='Мыло',
-                location='main',
                 prev_qty=5,
                 new_qty=4,
                 min_qty=5,
                 notify=True,
-                actor_user_id=42,
-                op_type='OUT',
             )
         )
         self.assertFalse(sent)
@@ -64,13 +58,10 @@ class LowStockNotifierTests(unittest.TestCase):
             notifier.maybe_notify_low_stock(
                 bot,
                 item='Мыло',
-                location='main',
                 prev_qty=6,
                 new_qty=5,
                 min_qty=5,
                 notify=False,
-                actor_user_id=42,
-                op_type='OUT',
             )
         )
         self.assertFalse(sent)
@@ -84,26 +75,20 @@ class LowStockNotifierTests(unittest.TestCase):
             notifier.maybe_notify_low_stock(
                 bot,
                 item='Мыло',
-                location='main',
                 prev_qty=6,
                 new_qty=5,
                 min_qty=5,
                 notify=True,
-                actor_user_id=42,
-                op_type='OUT',
             )
         )
         second = self._run(
             notifier.maybe_notify_low_stock(
                 bot,
                 item='Мыло',
-                location='main',
                 prev_qty=8,
                 new_qty=5,
                 min_qty=5,
                 notify=True,
-                actor_user_id=42,
-                op_type='OUT',
             )
         )
 

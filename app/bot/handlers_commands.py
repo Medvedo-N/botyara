@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -9,11 +7,19 @@ from app.bot.fsm.states import DialogState
 from app.bot.keyboards.main import main_menu
 
 
+def _menu_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    rbac = context.application.bot_data['rbac_service']
+    return main_menu(
+        can_inbound=rbac.has_permission(user_id, 'inventory.inbound'),
+        can_users_view=rbac.has_permission(user_id, 'users.view'),
+    )
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
     context.user_data['state'] = DialogState.IDLE.value
-    await update.message.reply_text('Ботяра готов. Выберите действие.', reply_markup=main_menu())
+    await update.message.reply_text('Ботяра готов. Выберите действие.', reply_markup=_menu_for_user(context, update.effective_user.id))
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -23,19 +29,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None:
+    if update.message is None or update.effective_user is None:
         return
     context.user_data['state'] = DialogState.IDLE.value
-    await update.message.reply_text('Состояние сброшено.', reply_markup=main_menu())
-
-
-def log_update_context(update: Update, state: str, action: str) -> str:
-    payload = {
-        'event': 'telegram_update',
-        'update_id': update.update_id,
-        'user_id': update.effective_user.id if update.effective_user else None,
-        'chat_id': update.effective_chat.id if update.effective_chat else None,
-        'state': state,
-        'action': action,
-    }
-    return json.dumps(payload, ensure_ascii=False)
+    await update.message.reply_text('Состояние сброшено.', reply_markup=_menu_for_user(context, update.effective_user.id))

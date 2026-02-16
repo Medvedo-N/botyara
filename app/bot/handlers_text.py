@@ -6,13 +6,19 @@ import re
 from telegram import Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
-from app.bot.fsm.scenarios import parse_inventory_input, parse_stock_item_input, start_state_for_action
+from app.bot.fsm.scenarios import parse_inventory_input, parse_positive_int, parse_stock_item_input, start_state_for_action
 from app.bot.fsm.states import DialogState
 from app.bot.keyboards.main import main_menu
+from app.bot.keyboards.take import take_confirm_keyboard, take_items_keyboard, take_qty_keyboard
 from app.models.domain import MovementRequest
 
 logger = logging.getLogger(__name__)
 
+
+def _reset_take_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop('take_item', None)
+    context.user_data.pop('take_qty', None)
+    context.user_data.pop('take_custom_qty', None)
 
 
 async def fsm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -24,10 +30,32 @@ async def fsm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await text_router_handler(update, context)
 
 
+def _menu_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    rbac = context.application.bot_data['rbac_service']
+    return main_menu(
+        can_inbound=rbac.has_permission(user_id, 'inventory.inbound'),
+        can_users_view=rbac.has_permission(user_id, 'users.view'),
+    )
+
+
+async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    rbac = context.application.bot_data['rbac_service']
+    if not rbac.has_permission(user_id, 'inventory.outbound'):
+        await update.message.reply_text('Нет прав на операцию «Взять».', reply_markup=_menu_for_user(context, user_id))
+        return
+
+    inventory = context.application.bot_data['inventory_service']
+    rows = inventory.storage.list_stock()
+    context.user_data['state'] = DialogState.TAKE_SELECT_ITEM.value
+    _reset_take_state(context)
+    await update.message.reply_text('Выберите товар:', reply_markup=take_items_keyboard(rows))
+
+
 async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
 
+    user_id = update.effective_user.id
     text = (update.message.text or '').strip()
     normalized = _normalize_text(text)
     state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
@@ -37,22 +65,36 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     action = _menu_action(normalized)
     if action is not None:
         if action == 'CANCEL':
+            _reset_take_state(context)
             context.user_data['state'] = DialogState.IDLE.value
-            await update.message.reply_text('Сценарий отменён.', reply_markup=main_menu())
+            await update.message.reply_text('Сценарий отменён.', reply_markup=_menu_for_user(context, user_id))
+            raise ApplicationHandlerStop
+
+        if action == 'USERS':
+            rbac = context.application.bot_data['rbac_service']
+            if not rbac.has_permission(user_id, 'users.view'):
+                await update.message.reply_text('Нет доступа к разделу пользователей.', reply_markup=_menu_for_user(context, user_id))
+            else:
+                await update.message.reply_text('Раздел пользователей доступен.', reply_markup=_menu_for_user(context, user_id))
+            _reset_take_state(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            raise ApplicationHandlerStop
+
+        if action == 'OUT':
+            _reset_take_state(context)
+            await _start_take_flow(update, context, user_id)
             raise ApplicationHandlerStop
 
         if state != DialogState.IDLE:
+            _reset_take_state(context)
             context.user_data['state'] = DialogState.IDLE.value
 
         context.user_data['state'] = start_state_for_action(action).value
         prompts = {
             'IN': 'Введите приход: <товар>,<кол-во>',
-            'OUT': 'Введите выдачу: <товар>,<кол-во>',
-            'MOVE': 'Введите перемещение: <товар>,<кол-во> (между main -> reserve)',
-            'WRITE_OFF': 'Введите списание: <товар>,<кол-во>',
             'STOCK': 'Введите товар для остатков: <товар> (можно: товар,1 или товар:1)',
         }
-        await update.message.reply_text(prompts[action], reply_markup=main_menu())
+        await update.message.reply_text(prompts[action], reply_markup=_menu_for_user(context, user_id))
         raise ApplicationHandlerStop
 
     inventory_service = context.application.bot_data['inventory_service']
@@ -62,56 +104,49 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if state == DialogState.WAITING_STOCK:
             item = parse_stock_item_input(text)
             if not item:
-                await update.message.reply_text(
-                    'Ожидаю название товара. Пример: мыло. Или нажмите ❌ Отмена',
-                    reply_markup=main_menu(),
-                )
+                await update.message.reply_text('Ожидаю название товара. Пример: мыло. Или нажмите ❌ Отмена', reply_markup=_menu_for_user(context, user_id))
                 raise ApplicationHandlerStop
 
-            rbac_service.require_permission(update.effective_user.id, 'inventory.read')
-            stock = inventory_service.get_stock(item=item, location='main')
-            await update.message.reply_text(f'Остаток {item}: {stock}', reply_markup=main_menu())
+            rbac_service.require_permission(user_id, 'inventory.view')
+            stock = inventory_service.get_stock(item=item)
+            await update.message.reply_text(f'Остаток {item}: {stock}', reply_markup=_menu_for_user(context, user_id))
             context.user_data['state'] = DialogState.IDLE.value
+            raise ApplicationHandlerStop
+
+        if state == DialogState.TAKE_SELECT_QTY and context.user_data.get('take_custom_qty'):
+            value = parse_positive_int(text)
+            if value is None:
+                await update.message.reply_text('Введите число. Например: 3', reply_markup=take_qty_keyboard())
+                raise ApplicationHandlerStop
+            context.user_data['take_qty'] = value
+            context.user_data['take_custom_qty'] = False
+            context.user_data['state'] = DialogState.TAKE_CONFIRM.value
+            item = context.user_data.get('take_item', '')
+            await update.message.reply_text(f'Взять «{item}» — {value} шт?', reply_markup=take_confirm_keyboard())
             raise ApplicationHandlerStop
 
         parsed = parse_inventory_input(text)
         if parsed is None:
             if state != DialogState.IDLE:
-                await update.message.reply_text(
-                    'Ожидаю название товара. Пример: мыло. Или нажмите ❌ Отмена',
-                    reply_markup=main_menu(),
-                )
+                await update.message.reply_text('Используйте кнопки. Или нажмите ❌ Отмена', reply_markup=_menu_for_user(context, user_id))
                 raise ApplicationHandlerStop
             await fallback_handler(update, context)
             raise ApplicationHandlerStop
 
         item, quantity = parsed
         if state == DialogState.WAITING_INBOUND:
-            rbac_service.require_permission(update.effective_user.id, 'inventory.inbound')
-            result = inventory_service.inbound(MovementRequest(item=item, quantity=quantity, user_id=update.effective_user.id, to_location='main'))
-            await update.message.reply_text(f'Приход выполнен. Остаток: {result.balance}', reply_markup=main_menu())
-        elif state == DialogState.WAITING_OUTBOUND:
-            rbac_service.require_permission(update.effective_user.id, 'inventory.outbound')
-            result = inventory_service.outbound(MovementRequest(item=item, quantity=quantity, user_id=update.effective_user.id, from_location='main'))
-            await update.message.reply_text(f'Выдача выполнена. Остаток: {result.balance}', reply_markup=main_menu())
-        elif state == DialogState.WAITING_MOVE:
-            rbac_service.require_permission(update.effective_user.id, 'inventory.move')
-            result = inventory_service.move(
-                MovementRequest(item=item, quantity=quantity, user_id=update.effective_user.id, from_location='main', to_location='reserve')
-            )
-            await update.message.reply_text(f'Перемещение выполнено. Остаток в reserve: {result.balance}', reply_markup=main_menu())
-        elif state == DialogState.WAITING_WRITE_OFF:
-            rbac_service.require_permission(update.effective_user.id, 'inventory.write_off')
-            result = inventory_service.write_off(MovementRequest(item=item, quantity=quantity, user_id=update.effective_user.id, from_location='main'))
-            await update.message.reply_text(f'Списание выполнено. Остаток: {result.balance}', reply_markup=main_menu())
+            rbac_service.require_permission(user_id, 'inventory.inbound')
+            result = inventory_service.inbound(MovementRequest(item=item, quantity=quantity, user_id=user_id))
+            await update.message.reply_text(f'Приход выполнен. Остаток: {result.balance}', reply_markup=_menu_for_user(context, user_id))
         else:
             await fallback_handler(update, context)
             raise ApplicationHandlerStop
     except PermissionError:
-        await update.message.reply_text('Нет прав на эту операцию.', reply_markup=main_menu())
+        await update.message.reply_text('Нет прав на эту операцию.', reply_markup=_menu_for_user(context, user_id))
     except ValueError as exc:
-        await update.message.reply_text(f'Ошибка операции: {exc}', reply_markup=main_menu())
+        await update.message.reply_text(f'Ошибка операции: {exc}', reply_markup=_menu_for_user(context, user_id))
 
+    _reset_take_state(context)
     context.user_data['state'] = DialogState.IDLE.value
     raise ApplicationHandlerStop
 
@@ -135,14 +170,12 @@ def _menu_action(normalized_text: str) -> str | None:
 
     if 'отмена' in normalized_text:
         return 'CANCEL'
+    if 'пользоват' in normalized_text:
+        return 'USERS'
     if 'остатк' in normalized_text:
         return 'STOCK'
     if normalized_text.startswith('приход') or ' приход' in normalized_text or 'поступлен' in normalized_text:
         return 'IN'
     if normalized_text.startswith('взять') or 'взять' in normalized_text or 'выдач' in normalized_text:
         return 'OUT'
-    if normalized_text.startswith('перемещ') or 'перемещ' in normalized_text:
-        return 'MOVE'
-    if normalized_text.startswith('брак') or 'брак' in normalized_text or 'списан' in normalized_text:
-        return 'WRITE_OFF'
     return None
