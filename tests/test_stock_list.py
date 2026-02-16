@@ -3,6 +3,7 @@ import unittest
 
 from telegram.ext import ApplicationHandlerStop
 
+from app.bot.fsm.states import DialogState
 from app.bot.handlers_callbacks import callback_handler
 from app.bot.handlers_text import _stock_marker, text_router_handler
 from app.models.domain import StockEntry
@@ -126,6 +127,18 @@ class StockListTests(unittest.TestCase):
 
         text, _ = update.message.sent[0]
         self.assertIn('Нет прав на просмотр остатков.', text)
+        self.assertNotIn('Не понял запрос', text)
+
+    def test_take_still_starts_when_stock_view_denied(self):
+        context = _FakeContext(can_view=False)
+        update = _FakeUpdate('Взять')
+
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(text_router_handler(update, context))
+
+        self.assertEqual(context.user_data['state'], DialogState.TAKE_SELECT_ITEM.value)
+        text, _ = update.message.sent[0]
+        self.assertIn('Выберите товар', text)
 
     def test_stock_marker_thresholds(self):
         self.assertEqual(_stock_marker(5, 50, 5), '🔴')

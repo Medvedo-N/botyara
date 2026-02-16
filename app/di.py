@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 from telegram.ext import Application
+from telegram.ext import ContextTypes
 
 from app.bot.router import register_handlers
 from app.config import get_settings
@@ -11,6 +14,8 @@ from app.services.reorder import ReorderService
 from app.storage.interface import StoragePort
 from app.storage.memory import MemoryStorage
 from app.storage.sheets import GoogleSheetsStorage
+
+logger = logging.getLogger(__name__)
 
 
 def get_storage() -> StoragePort:
@@ -48,7 +53,21 @@ def build_telegram_application() -> Application:
     storage = get_storage()
 
     application = Application.builder().token(settings.BOT_TOKEN).build()
+    async def _telegram_error_handler(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.exception('telegram_update_failed', exc_info=context.error)
+        target_message = None
+        if update is not None and getattr(update, 'effective_message', None) is not None:
+            target_message = update.effective_message
+        elif update is not None and getattr(update, 'message', None) is not None:
+            target_message = update.message
+        if target_message is not None:
+            try:
+                await target_message.reply_text('Произошла ошибка, попробуйте ещё раз или нажмите /cancel.')
+            except Exception:
+                logger.exception('telegram_error_reply_failed')
+
     register_handlers(application)
+    application.add_error_handler(_telegram_error_handler)
 
     notifier = get_low_stock_notifier()
     reorder_service = get_reorder_service(storage, notifier=notifier, application_bot=application.bot)
