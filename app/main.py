@@ -72,7 +72,12 @@ async def webhook(request: Request) -> dict[str, bool]:
         if header_secret != settings.WEBHOOK_SECRET:
             raise HTTPException(status_code=403, detail='invalid webhook secret')
 
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as exc:  # pragma: no cover
+        logger.warning(json.dumps({'event': 'webhook_invalid_json', 'error': str(exc)}))
+        return {'ok': True}
+
     application = request.app.state.telegram_application
     update = Update.de_json(payload, application.bot)
 
