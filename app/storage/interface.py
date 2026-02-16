@@ -1,0 +1,36 @@
+from __future__ import annotations
+
+from typing import Protocol
+
+from app.models.domain import Item, Role, StockEntry
+
+
+class StoragePort(Protocol):
+    def get_item(self, name: str) -> Item | None: ...
+
+    def list_items(self) -> list[Item]: ...
+
+    def add_inbound(self, item: str, quantity: int, to_location: str, user_id: int, op_id: str | None = None) -> int: ...
+
+    def add_outbound(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int: ...
+
+    def add_move(
+        self,
+        item: str,
+        quantity: int,
+        from_location: str,
+        to_location: str,
+        user_id: int,
+        op_id: str | None = None,
+    ) -> int: ...
+
+    def add_write_off(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int: ...
+
+    def get_stock(self, item: str, location: str) -> int: ...
+
+    def list_stock(self) -> list[StockEntry]: ...
+
+
+    def get_item_limits(self, item: str, location: str) -> tuple[int | None, bool]: ...
+
+    def get_user_role(self, user_id: int) -> Role: ...

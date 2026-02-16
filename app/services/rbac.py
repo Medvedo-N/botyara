@@ -1,27 +1,31 @@
 from __future__ import annotations
 
-import os
+from dataclasses import dataclass
 
-from app.models import Role
-from app.services.storage import get_storage
+from app.models.domain import Role
+from app.storage.interface import StoragePort
 
-
-def get_role(tg_id: int) -> Role:
-    storage = get_storage()
-    user = storage.get_user(tg_id)
-    if user and user.active:
-        return user.role
-
-    bootstrap_superadmin = os.getenv("SUPERADMIN_TG_ID", "").strip()
-    if bootstrap_superadmin.isdigit() and int(bootstrap_superadmin) == tg_id:
-        return Role.SUPERADMIN
-
-    return Role.NO_ACCESS
+PERMISSIONS: dict[Role, set[str]] = {
+    Role.OWNER: {'inventory.read', 'inventory.inbound', 'inventory.outbound', 'inventory.move', 'inventory.write_off'},
+    Role.MANAGER: {'inventory.read', 'inventory.inbound', 'inventory.outbound', 'inventory.move', 'inventory.write_off'},
+    Role.STOREKEEPER: {'inventory.read', 'inventory.inbound', 'inventory.outbound', 'inventory.move'},
+    Role.VIEWER: {'inventory.read'},
+    Role.NO_ACCESS: set(),
+}
 
 
-def can_access_admin(role: Role) -> bool:
-    return role == Role.SUPERADMIN
+@dataclass
+class RbacService:
+    storage: StoragePort
+    superadmin_tg_id: int
 
+    def get_role(self, user_id: int) -> Role:
+        if user_id == self.superadmin_tg_id:
+            return Role.OWNER
+        return self.storage.get_user_role(user_id)
 
-def can_access_stock(role: Role) -> bool:
-    return role in {Role.SUPERADMIN, Role.ADMIN, Role.TECH, Role.VIEWER}
+    def require_permission(self, user_id: int, permission: str) -> Role:
+        role = self.get_role(user_id)
+        if permission not in PERMISSIONS.get(role, set()):
+            raise PermissionError(f'permission denied: {permission} for role {role.value}')
+        return role
