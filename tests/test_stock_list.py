@@ -4,7 +4,7 @@ import unittest
 from telegram.ext import ApplicationHandlerStop
 
 from app.bot.handlers_callbacks import callback_handler
-from app.bot.handlers_text import text_router_handler
+from app.bot.handlers_text import _stock_marker, text_router_handler
 from app.models.domain import StockEntry
 
 
@@ -42,11 +42,18 @@ class _FakeInventory:
 
 
 class _FakeRbac:
+    def __init__(self, *, can_view: bool = True):
+        self.can_view = can_view
+
     def require_permission(self, user_id, permission):
+        if permission == 'inventory.view' and not self.can_view:
+            raise PermissionError('no access')
         return None
 
     def has_permission(self, user_id, permission):
-        return permission in {'inventory.view', 'inventory.outbound'}
+        if permission == 'inventory.view':
+            return self.can_view
+        return permission in {'inventory.outbound'}
 
     def get_role(self, user_id):
         class _Role:
@@ -56,9 +63,9 @@ class _FakeRbac:
 
 
 class _FakeContext:
-    def __init__(self):
+    def __init__(self, *, can_view: bool = True):
         self.user_data = {'state': 'IDLE'}
-        self.application = type('App', (), {'bot_data': {'inventory_service': _FakeInventory(), 'rbac_service': _FakeRbac()}})()
+        self.application = type('App', (), {'bot_data': {'inventory_service': _FakeInventory(), 'rbac_service': _FakeRbac(can_view=can_view)}})()
 
 
 class _FakeCallbackQuery:
@@ -109,6 +116,21 @@ class StockListTests(unittest.TestCase):
 
         edited_text, _ = update.callback_query.edits[0]
         self.assertIn('Остатки (стр. 2/2)', edited_text)
+
+    def test_stock_menu_no_access_returns_permission_message(self):
+        context = _FakeContext(can_view=False)
+        update = _FakeUpdate('Остатки')
+
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(text_router_handler(update, context))
+
+        text, _ = update.message.sent[0]
+        self.assertIn('Нет прав на просмотр остатков.', text)
+
+    def test_stock_marker_thresholds(self):
+        self.assertEqual(_stock_marker(5, 50, 5), '🔴')
+        self.assertEqual(_stock_marker(20, 50, 5), '🟡')
+        self.assertEqual(_stock_marker(51, 50, 5), '🟢')
 
 
 if __name__ == '__main__':

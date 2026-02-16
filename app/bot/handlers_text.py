@@ -18,11 +18,17 @@ PAGE_SIZE = 12
 
 
 def _stock_marker(qty: int, norm: int | None, crit: int | None) -> str:
-    if norm is not None and qty > norm:
-        return '🟢'
-    if crit is not None and qty > crit:
+    # Status policy:
+    # - 🔴 if qty <= crit
+    # - 🟡 if crit < qty <= norm
+    # - 🟢 if qty > norm
+    crit_value = crit if crit is not None else 0
+    norm_value = norm if norm is not None else crit_value
+    if qty <= crit_value:
+        return '🔴'
+    if qty <= norm_value:
         return '🟡'
-    return '🔴'
+    return '🟢'
 
 
 def _reset_take_state(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -159,7 +165,9 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
             rbac_service = context.application.bot_data['rbac_service']
-            rbac_service.require_permission(user_id, 'inventory.view')
+            if not rbac_service.has_permission(user_id, 'inventory.view'):
+                await update.message.reply_text('Нет прав на просмотр остатков.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
             await show_stock_list(update, context, page=1)
             raise ApplicationHandlerStop
 
