@@ -22,6 +22,29 @@ class InventoryServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.move(MovementRequest(item='Фильтр', quantity=1, user_id=123, from_location='main', to_location='main'))
 
+
+    def test_inbound_is_idempotent_by_op_id(self):
+        first = self.service.inbound(
+            MovementRequest(item='Фильтр', quantity=3, user_id=123, to_location='main', op_id='op-1')
+        )
+        second = self.service.inbound(
+            MovementRequest(item='Фильтр', quantity=3, user_id=123, to_location='main', op_id='op-1')
+        )
+        self.assertEqual(first.balance, 23)
+        self.assertEqual(second.balance, 23)
+        self.assertEqual(self.storage.get_stock('Фильтр', 'main'), 23)
+
+    def test_move_is_idempotent_by_op_id(self):
+        first = self.service.move(
+            MovementRequest(item='Фильтр', quantity=2, user_id=123, from_location='main', to_location='reserve', op_id='op-move-1')
+        )
+        second = self.service.move(
+            MovementRequest(item='Фильтр', quantity=2, user_id=123, from_location='main', to_location='reserve', op_id='op-move-1')
+        )
+        self.assertEqual(first.balance, 2)
+        self.assertEqual(second.balance, 2)
+        self.assertEqual(self.storage.get_stock('Фильтр', 'main'), 18)
+        self.assertEqual(self.storage.get_stock('Фильтр', 'reserve'), 2)
     def test_write_off_decreases_balance(self):
         result = self.service.write_off(MovementRequest(item='Фильтр', quantity=2, user_id=123, from_location='main'))
         self.assertEqual(result.balance, 18)

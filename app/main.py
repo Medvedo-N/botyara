@@ -17,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app_instance: FastAPI):
     settings = get_settings()
     application = build_telegram_application()
+    app_instance.state.telegram_application = application
     await application.initialize()
     await application.start()
     logger.info(json.dumps({'event': 'startup', 'status': 'ok', 'env': settings.ENV}))
@@ -71,8 +72,13 @@ async def webhook(request: Request) -> dict[str, bool]:
         if header_secret != settings.WEBHOOK_SECRET:
             raise HTTPException(status_code=403, detail='invalid webhook secret')
 
-    payload = await request.json()
-    application = build_telegram_application()
+    try:
+        payload = await request.json()
+    except Exception as exc:  # pragma: no cover
+        logger.warning(json.dumps({'event': 'webhook_invalid_json', 'error': str(exc)}))
+        return {'ok': True}
+
+    application = request.app.state.telegram_application
     update = Update.de_json(payload, application.bot)
 
     logger.info(

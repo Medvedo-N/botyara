@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import time
 from collections.abc import Callable
 from typing import Any
@@ -62,9 +63,51 @@ class GoogleSheetsStorage(StoragePort):
 
         self._retry(_do)
 
+
+    @staticmethod
+    def _normalize_key(value: str) -> str:
+        return value.strip().lower()
+
+    def _find_balance_row(self, item: str, location: str) -> int | None:
+        target_item = self._normalize_key(item)
+        target_location = self._normalize_key(location)
+        rows = self._read('balances!A:C')
+        for idx, row in enumerate(rows, start=1):
+            if len(row) < 2:
+                continue
+            if self._normalize_key(row[0]) == target_item and self._normalize_key(row[1]) == target_location:
+                return idx
+        return None
+
+    def _operation_exists(self, op_id: str | None) -> bool:
+        if not op_id:
+            return False
+        target = self._normalize_key(op_id)
+        for row in self._read('ledger!A:A'):
+            if row and self._normalize_key(row[0]) == target:
+                return True
+        return False
+
+    def _record_ledger(
+        self,
+        op_id: str,
+        op_type: str,
+        item: str,
+        quantity: int,
+        user_id: int,
+        *,
+        location: str = '',
+        from_location: str = '',
+        to_location: str = '',
+    ) -> None:
+        ts_utc = datetime.now(timezone.utc).isoformat()
+        self._append(
+            'ledger!A:I',
+            [op_id, ts_utc, op_type, item, location, quantity, from_location, to_location, user_id],
+        )
     def get_item(self, name: str) -> Item | None:
         for row in self._read('items!A:B'):
-            if len(row) >= 1 and row[0].strip().lower() == name.strip().lower():
+            if len(row) >= 1 and self._normalize_key(row[0]) == self._normalize_key(name):
                 return Item(name=row[0])
         return None
 
@@ -72,18 +115,24 @@ class GoogleSheetsStorage(StoragePort):
         return [Item(name=row[0]) for row in self._read('items!A:A') if row]
 
     def add_inbound(self, item: str, quantity: int, to_location: str, user_id: int, op_id: str | None = None) -> int:
+        if op_id and self._operation_exists(op_id):
+            return self.get_stock(item, to_location)
         new_balance = self.get_stock(item, to_location) + quantity
-        self._append('ledger!A:F', ['IN', item, quantity, '', to_location, user_id])
         self._upsert_balance(item, to_location, new_balance)
+        if op_id:
+            self._record_ledger(op_id, 'IN', item, quantity, user_id, location=to_location, to_location=to_location)
         return new_balance
 
     def add_outbound(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int:
+        if op_id and self._operation_exists(op_id):
+            return self.get_stock(item, from_location)
         current = self.get_stock(item, from_location)
         if current < quantity:
             raise ValueError('insufficient stock')
         new_balance = current - quantity
-        self._append('ledger!A:F', ['OUT', item, quantity, from_location, '', user_id])
         self._upsert_balance(item, from_location, new_balance)
+        if op_id:
+            self._record_ledger(op_id, 'OUT', item, quantity, user_id, location=from_location, from_location=from_location)
         return new_balance
 
     def add_move(
@@ -95,29 +144,82 @@ class GoogleSheetsStorage(StoragePort):
         user_id: int,
         op_id: str | None = None,
     ) -> int:
-        self.add_outbound(item, quantity, from_location, user_id, op_id)
-        return self.add_inbound(item, quantity, to_location, user_id, op_id)
+        if op_id and self._operation_exists(op_id):
+            return self.get_stock(item, to_location)
+        if self._normalize_key(from_location) == self._normalize_key(to_location):
+            raise ValueError('source and destination locations should differ')
+
+        from_balance = self.get_stock(item, from_location)
+        if from_balance < quantity:
+            raise ValueError('insufficient stock')
+        to_balance = self.get_stock(item, to_location)
+
+        self._upsert_balance(item, from_location, from_balance - quantity)
+        self._upsert_balance(item, to_location, to_balance + quantity)
+        if op_id:
+            self._record_ledger(
+                op_id,
+                'MOVE',
+                item,
+                quantity,
+                user_id,
+                location=to_location,
+                from_location=from_location,
+                to_location=to_location,
+            )
+        return to_balance + quantity
 
     def add_write_off(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int:
+        if op_id and self._operation_exists(op_id):
+            return self.get_stock(item, from_location)
         current = self.get_stock(item, from_location)
         if current < quantity:
             raise ValueError('insufficient stock')
         new_balance = current - quantity
-        self._append('ledger!A:F', ['WRITE_OFF', item, quantity, from_location, '', user_id])
         self._upsert_balance(item, from_location, new_balance)
+        if op_id:
+            self._record_ledger(
+                op_id,
+                'WRITE_OFF',
+                item,
+                quantity,
+                user_id,
+                location=from_location,
+                from_location=from_location,
+            )
         return new_balance
 
     def get_stock(self, item: str, location: str) -> int:
+        target_item = self._normalize_key(item)
+        target_location = self._normalize_key(location)
+        current = 0
         rows = self._read('balances!A:C')
         for row in rows:
-            if len(row) >= 3 and row[0] == item and row[1] == location:
+            if len(row) >= 3 and self._normalize_key(row[0]) == target_item and self._normalize_key(row[1]) == target_location:
                 try:
-                    return int(row[2])
+                    current = int(row[2])
                 except ValueError:
-                    return 0
-        return 0
+                    current = 0
+        return current
 
     def _upsert_balance(self, item: str, location: str, quantity: int) -> None:
+        row_num = self._find_balance_row(item, location)
+        if row_num is not None:
+            def _do() -> Any:
+                return (
+                    self._service.spreadsheets()
+                    .values()
+                    .update(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f'balances!A{row_num}:C{row_num}',
+                        valueInputOption='USER_ENTERED',
+                        body={'values': [[item, location, quantity]]},
+                    )
+                    .execute(num_retries=self.retries)
+                )
+
+            self._retry(_do)
+            return
         self._append('balances!A:C', [item, location, quantity])
 
     def list_stock(self) -> list[StockEntry]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -87,15 +88,23 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def _normalize_text(text: str) -> str:
-    return ' '.join(text.strip().lower().split())
+    lowered = text.lower()
+    no_symbols = re.sub(r'[^\w\s]+', ' ', lowered, flags=re.UNICODE)
+    return ' '.join(no_symbols.split())
 
 
 def _menu_action(normalized_text: str) -> str | None:
-    mapping = {
-        'приход': 'IN',
-        'взять': 'OUT',
-        'перемещение': 'MOVE',
-        'брак': 'WRITE_OFF',
-        'остатки': 'STOCK',
-    }
-    return mapping.get(normalized_text)
+    if not normalized_text:
+        return None
+
+    if 'остатк' in normalized_text:
+        return 'STOCK'
+    if normalized_text.startswith('приход') or ' приход' in normalized_text or 'поступлен' in normalized_text:
+        return 'IN'
+    if normalized_text.startswith('взять') or 'взять' in normalized_text or 'выдач' in normalized_text:
+        return 'OUT'
+    if normalized_text.startswith('перемещ') or 'перемещ' in normalized_text:
+        return 'MOVE'
+    if normalized_text.startswith('брак') or 'брак' in normalized_text or 'списан' in normalized_text:
+        return 'WRITE_OFF'
+    return None

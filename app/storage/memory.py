@@ -15,6 +15,7 @@ class MemoryStorage(StoragePort):
             ('Масло', 'main'): 10,
         }
         self._roles: dict[int, Role] = {}
+        self._op_results: dict[str, tuple[str, str, int]] = {}
         if superadmin_tg_id:
             self._roles[superadmin_tg_id] = Role.OWNER
 
@@ -25,17 +26,25 @@ class MemoryStorage(StoragePort):
         return list(self._items.values())
 
     def add_inbound(self, item: str, quantity: int, to_location: str, user_id: int, op_id: str | None = None) -> int:
+        if op_id and op_id in self._op_results:
+            return self._op_results[op_id][2]
         self._items.setdefault(item, Item(name=item))
         key = (item, to_location)
         self._stock[key] = self._stock.get(key, 0) + quantity
+        if op_id:
+            self._op_results[op_id] = (item, to_location, self._stock[key])
         return self._stock[key]
 
     def add_outbound(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int:
+        if op_id and op_id in self._op_results:
+            return self._op_results[op_id][2]
         key = (item, from_location)
         current = self._stock.get(key, 0)
         if current < quantity:
             raise ValueError('insufficient stock')
         self._stock[key] = current - quantity
+        if op_id:
+            self._op_results[op_id] = (item, from_location, self._stock[key])
         return self._stock[key]
 
     def add_move(
@@ -47,8 +56,22 @@ class MemoryStorage(StoragePort):
         user_id: int,
         op_id: str | None = None,
     ) -> int:
-        self.add_outbound(item=item, quantity=quantity, from_location=from_location, user_id=user_id, op_id=op_id)
-        return self.add_inbound(item=item, quantity=quantity, to_location=to_location, user_id=user_id, op_id=op_id)
+        if op_id and op_id in self._op_results:
+            return self._op_results[op_id][2]
+        if from_location == to_location:
+            raise ValueError('source and destination locations should differ')
+
+        from_key = (item, from_location)
+        to_key = (item, to_location)
+        from_current = self._stock.get(from_key, 0)
+        if from_current < quantity:
+            raise ValueError('insufficient stock')
+
+        self._stock[from_key] = from_current - quantity
+        self._stock[to_key] = self._stock.get(to_key, 0) + quantity
+        if op_id:
+            self._op_results[op_id] = (item, to_location, self._stock[to_key])
+        return self._stock[to_key]
 
     def add_write_off(self, item: str, quantity: int, from_location: str, user_id: int, op_id: str | None = None) -> int:
         return self.add_outbound(item=item, quantity=quantity, from_location=from_location, user_id=user_id, op_id=op_id)
