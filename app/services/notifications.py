@@ -23,8 +23,7 @@ class LowStockNotifier:
         return datetime.now(timezone.utc) - last < timedelta(minutes=self.throttle_minutes)
 
     def _mark_notified(self, item: str) -> None:
-        key = item.strip().lower()
-        self._last_notified_at[key] = datetime.now(timezone.utc)
+        self._last_notified_at[item.strip().lower()] = datetime.now(timezone.utc)
 
     async def maybe_notify_low_stock(
         self,
@@ -35,25 +34,22 @@ class LowStockNotifier:
         new_qty: int,
         min_qty: int | None,
         notify: bool,
+        norm: int | None = None,
+        to_order: int | None = None,
     ) -> bool:
         target_chat_id = self._target_chat_id()
-        if target_chat_id is None:
-            return False
-        if not notify:
-            return False
-        if min_qty is None:
+        if target_chat_id is None or not notify or min_qty is None:
             return False
         if not (prev_qty > min_qty and new_qty <= min_qty):
             return False
         if self._is_throttled(item):
             return False
 
-        text = (
-            '⚠️ Критический минимум!\n'
-            f'Товар: {item}\n'
-            f'Остаток: {new_qty}\n'
-            f'Минимум: {min_qty}'
-        )
+        if norm is not None and to_order is not None:
+            text = f'🔴 Критический минимум: {item}. Остаток: {new_qty}. Норма: {norm}. Заказать: {to_order}.'
+        else:
+            text = f'🔴 Критический минимум: {item}. Остаток: {new_qty}. Минимум: {min_qty}.'
+
         await bot.send_message(chat_id=target_chat_id, text=text)
         self._mark_notified(item)
         return True

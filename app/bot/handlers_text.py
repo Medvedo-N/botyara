@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from app.bot.fsm.scenarios import parse_inventory_input, parse_positive_int, parse_stock_item_input, start_state_for_action
@@ -15,10 +15,33 @@ from app.models.domain import MovementRequest
 logger = logging.getLogger(__name__)
 
 
+def _stock_marker(qty: int, norm: int | None, crit: int | None) -> str:
+    if norm is not None and qty > norm:
+        return '🟢'
+    if crit is not None and qty > crit:
+        return '🟡'
+    return '🔴'
+
+
 def _reset_take_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.pop('take_item', None)
-    context.user_data.pop('take_qty', None)
-    context.user_data.pop('take_custom_qty', None)
+    for key in ['take_item', 'take_qty', 'take_custom_qty']:
+        context.user_data.pop(key, None)
+
+
+def _reset_add_item_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in ['add_item_name', 'add_item_norm', 'add_item_crit', 'add_item_qty']:
+        context.user_data.pop(key, None)
+
+
+def _reset_user_add_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in ['new_user_id', 'new_user_name']:
+        context.user_data.pop(key, None)
+
+
+def _reset_all(context: ContextTypes.DEFAULT_TYPE) -> None:
+    _reset_take_state(context)
+    _reset_add_item_state(context)
+    _reset_user_add_state(context)
 
 
 async def fsm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -65,7 +88,7 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     action = _menu_action(normalized)
     if action is not None:
         if action == 'CANCEL':
-            _reset_take_state(context)
+            _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
             await update.message.reply_text('Сценарий отменён.', reply_markup=_menu_for_user(context, user_id))
             raise ApplicationHandlerStop
@@ -75,18 +98,19 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not rbac.has_permission(user_id, 'users.view'):
                 await update.message.reply_text('Нет доступа к разделу пользователей.', reply_markup=_menu_for_user(context, user_id))
             else:
-                await update.message.reply_text('Раздел пользователей доступен.', reply_markup=_menu_for_user(context, user_id))
-            _reset_take_state(context)
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton('➕ Добавить', callback_data='users:add')], [InlineKeyboardButton('❌ Отмена', callback_data='cancel')]])
+                await update.message.reply_text('👥 Пользователи', reply_markup=kb)
+            _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
             raise ApplicationHandlerStop
 
         if action == 'OUT':
-            _reset_take_state(context)
+            _reset_all(context)
             await _start_take_flow(update, context, user_id)
             raise ApplicationHandlerStop
 
         if state != DialogState.IDLE:
-            _reset_take_state(context)
+            _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
 
         context.user_data['state'] = start_state_for_action(action).value
@@ -109,7 +133,19 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             rbac_service.require_permission(user_id, 'inventory.view')
             stock = inventory_service.get_stock(item=item)
-            await update.message.reply_text(f'Остаток {item}: {stock}', reply_markup=_menu_for_user(context, user_id))
+            if hasattr(inventory_service, 'storage'):
+                norm, crit = inventory_service.storage.get_item_limits(item)
+            else:
+                norm, crit = (None, None)
+            marker = _stock_marker(stock, norm, crit)
+            text_out = f'{marker} {item} — {stock}'
+            if norm is not None and crit is not None:
+                text_out += f' (норма {norm}, крит {crit})'
+
+            kb = None
+            if rbac_service.has_permission(user_id, 'users.view'):
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton('🗑 Убрать товар', callback_data=f'delete:item:{item}')]])
+            await update.message.reply_text(text_out, reply_markup=kb or _menu_for_user(context, user_id))
             context.user_data['state'] = DialogState.IDLE.value
             raise ApplicationHandlerStop
 
@@ -125,6 +161,69 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(f'Взять «{item}» — {value} шт?', reply_markup=take_confirm_keyboard())
             raise ApplicationHandlerStop
 
+        if state == DialogState.ADD_ITEM_NAME:
+            context.user_data['add_item_name'] = text
+            context.user_data['state'] = DialogState.ADD_ITEM_NORM.value
+            await update.message.reply_text('Введите норму (число):')
+            raise ApplicationHandlerStop
+
+        if state == DialogState.ADD_ITEM_NORM:
+            value = parse_positive_int(text)
+            if value is None:
+                await update.message.reply_text('Введите число. Например: 50')
+                raise ApplicationHandlerStop
+            context.user_data['add_item_norm'] = value
+            context.user_data['state'] = DialogState.ADD_ITEM_CRIT.value
+            await update.message.reply_text('Введите крит минимум (число):')
+            raise ApplicationHandlerStop
+
+        if state == DialogState.ADD_ITEM_CRIT:
+            value = parse_positive_int(text)
+            if value is None:
+                await update.message.reply_text('Введите число. Например: 5')
+                raise ApplicationHandlerStop
+            context.user_data['add_item_crit'] = value
+            context.user_data['state'] = DialogState.ADD_ITEM_QTY.value
+            await update.message.reply_text('Введите количество прихода сейчас (число):')
+            raise ApplicationHandlerStop
+
+        if state == DialogState.ADD_ITEM_QTY:
+            value = parse_positive_int(text)
+            if value is None:
+                await update.message.reply_text('Введите число. Например: 20')
+                raise ApplicationHandlerStop
+            context.user_data['add_item_qty'] = value
+            kb = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton('✅ Сохранить', callback_data='additem:save')],
+                    [InlineKeyboardButton('❌ Отмена', callback_data='cancel')],
+                ]
+            )
+            await update.message.reply_text('Сохранить товар?', reply_markup=kb)
+            raise ApplicationHandlerStop
+
+        if state == DialogState.USER_ADD_ID:
+            if not text.isdigit():
+                await update.message.reply_text('Введите TG ID числом.')
+                raise ApplicationHandlerStop
+            context.user_data['new_user_id'] = int(text)
+            context.user_data['state'] = DialogState.USER_ADD_NAME.value
+            await update.message.reply_text('Введите имя пользователя:')
+            raise ApplicationHandlerStop
+
+        if state == DialogState.USER_ADD_NAME:
+            context.user_data['new_user_name'] = text
+            context.user_data['state'] = DialogState.USER_ADD_ROLE.value
+            kb = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton('user', callback_data='userrole:user'), InlineKeyboardButton('manager', callback_data='userrole:manager')],
+                    [InlineKeyboardButton('senior_manager', callback_data='userrole:senior_manager'), InlineKeyboardButton('dev', callback_data='userrole:dev')],
+                    [InlineKeyboardButton('❌ Отмена', callback_data='cancel')],
+                ]
+            )
+            await update.message.reply_text('Выберите роль:', reply_markup=kb)
+            raise ApplicationHandlerStop
+
         parsed = parse_inventory_input(text)
         if parsed is None:
             if state != DialogState.IDLE:
@@ -137,7 +236,8 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if state == DialogState.WAITING_INBOUND:
             rbac_service.require_permission(user_id, 'inventory.inbound')
             result = inventory_service.inbound(MovementRequest(item=item, quantity=quantity, user_id=user_id))
-            await update.message.reply_text(f'Приход выполнен. Остаток: {result.balance}', reply_markup=_menu_for_user(context, user_id))
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('➕ Добавить товар', callback_data='additem:start')]])
+            await update.message.reply_text(f'Приход выполнен. Остаток: {result.balance}', reply_markup=kb)
         else:
             await fallback_handler(update, context)
             raise ApplicationHandlerStop
@@ -146,7 +246,7 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError as exc:
         await update.message.reply_text(f'Ошибка операции: {exc}', reply_markup=_menu_for_user(context, user_id))
 
-    _reset_take_state(context)
+    _reset_all(context)
     context.user_data['state'] = DialogState.IDLE.value
     raise ApplicationHandlerStop
 

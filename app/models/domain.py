@@ -20,11 +20,17 @@ class OperationType(str, Enum):
 
 class Item(BaseModel):
     name: str
+    qty: int = 0
+    norm: int = 0
+    crit_min: int = 0
+    is_active: bool = True
 
 
 class StockEntry(BaseModel):
     name: str
     quantity: int = 0
+    norm: int = 0
+    crit_min: int = 0
 
 
 class OperationResult(BaseModel):

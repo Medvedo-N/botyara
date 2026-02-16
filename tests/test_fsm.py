@@ -64,7 +64,7 @@ class FsmFlowTests(unittest.TestCase):
         context = _FakeContext(DialogState.WAITING_STOCK)
         with self.assertRaises(ApplicationHandlerStop):
             self._run(fsm_text_handler(update, context))
-        self.assertIn('Остаток мыло: 20', update.message.sent[0])
+        self.assertIn('мыло — 20', update.message.sent[0])
         self.assertEqual(context.user_data['state'], DialogState.IDLE.value)
 
     def test_after_success_no_fallback_message(self):
@@ -80,13 +80,13 @@ class FsmFlowTests(unittest.TestCase):
         context1 = _FakeContext(DialogState.WAITING_STOCK)
         with self.assertRaises(ApplicationHandlerStop):
             self._run(fsm_text_handler(update1, context1))
-        self.assertIn('Остаток мыло: 20', update1.message.sent[0])
+        self.assertIn('мыло — 20', update1.message.sent[0])
 
         update2 = _FakeUpdate('мыло:1')
         context2 = _FakeContext(DialogState.WAITING_STOCK)
         with self.assertRaises(ApplicationHandlerStop):
             self._run(fsm_text_handler(update2, context2))
-        self.assertIn('Остаток мыло: 20', update2.message.sent[0])
+        self.assertIn('мыло — 20', update2.message.sent[0])
 
     def test_cancel_resets_state(self):
         update = _FakeUpdate('/cancel')

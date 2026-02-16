@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.services.inventory import InventoryService
 from app.services.notifications import LowStockNotifier
 from app.services.rbac import RbacService
+from app.services.reorder import ReorderService
 from app.storage.interface import StoragePort
 from app.storage.memory import MemoryStorage
 from app.storage.sheets import GoogleSheetsStorage
@@ -29,8 +30,12 @@ def get_low_stock_notifier() -> LowStockNotifier:
     )
 
 
-def get_inventory_service(storage: StoragePort, *, notifier: LowStockNotifier, application_bot) -> InventoryService:
-    return InventoryService(storage=storage, notifier=notifier, bot=application_bot)
+def get_reorder_service(storage: StoragePort, *, notifier: LowStockNotifier, application_bot) -> ReorderService:
+    return ReorderService(storage=storage, notifier=notifier, bot=application_bot)
+
+
+def get_inventory_service(storage: StoragePort, *, notifier: LowStockNotifier, reorder: ReorderService, application_bot) -> InventoryService:
+    return InventoryService(storage=storage, notifier=notifier, reorder=reorder, bot=application_bot)
 
 
 def get_rbac_service(storage: StoragePort) -> RbacService:
@@ -46,11 +51,13 @@ def build_telegram_application() -> Application:
     register_handlers(application)
 
     notifier = get_low_stock_notifier()
-    inventory_service = get_inventory_service(storage, notifier=notifier, application_bot=application.bot)
+    reorder_service = get_reorder_service(storage, notifier=notifier, application_bot=application.bot)
+    inventory_service = get_inventory_service(storage, notifier=notifier, reorder=reorder_service, application_bot=application.bot)
     rbac_service = get_rbac_service(storage)
 
     application.bot_data['storage'] = storage
     application.bot_data['notifier'] = notifier
+    application.bot_data['reorder_service'] = reorder_service
     application.bot_data['inventory_service'] = inventory_service
     application.bot_data['rbac_service'] = rbac_service
     application.bot_data['settings'] = settings

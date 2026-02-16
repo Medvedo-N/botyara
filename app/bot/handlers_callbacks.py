@@ -5,9 +5,9 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from app.bot.fsm.scenarios import parse_positive_int
 from app.bot.fsm.states import DialogState
-from app.bot.handlers_text import _menu_for_user, _reset_take_state
+from app.bot.handlers_text import _menu_for_user, _reset_add_item_state, _reset_all, _reset_take_state, _reset_user_add_state
 from app.bot.keyboards.take import take_confirm_keyboard, take_qty_keyboard
-from app.models.domain import MovementRequest
+from app.models.domain import MovementRequest, Role
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -21,11 +21,79 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
     inventory = context.application.bot_data['inventory_service']
     rbac = context.application.bot_data['rbac_service']
+    storage = inventory.storage
 
     if data == 'cancel':
-        _reset_take_state(context)
+        _reset_all(context)
         context.user_data['state'] = DialogState.IDLE.value
         await query.edit_message_text('Сценарий отменён.')
+        await query.message.reply_text('Главное меню', reply_markup=_menu_for_user(context, user_id))
+        raise ApplicationHandlerStop
+
+    if data == 'users:add':
+        if not rbac.has_permission(user_id, 'users.view'):
+            await query.message.reply_text('Нет доступа.', reply_markup=_menu_for_user(context, user_id))
+            raise ApplicationHandlerStop
+        _reset_user_add_state(context)
+        context.user_data['state'] = DialogState.USER_ADD_ID.value
+        await query.message.reply_text('Введите TG ID:')
+        raise ApplicationHandlerStop
+
+    if data.startswith('userrole:'):
+        if state != DialogState.USER_ADD_ROLE:
+            raise ApplicationHandlerStop
+        role_key = data.removeprefix('userrole:')
+        if role_key not in {r.value for r in Role if r != Role.NO_ACCESS}:
+            await query.message.reply_text('Неизвестная роль.')
+            raise ApplicationHandlerStop
+        new_user_id = context.user_data.get('new_user_id')
+        new_user_name = context.user_data.get('new_user_name')
+        if not isinstance(new_user_id, int) or not isinstance(new_user_name, str):
+            _reset_user_add_state(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            await query.message.reply_text('Данные пользователя потеряны. Начните заново.', reply_markup=_menu_for_user(context, user_id))
+            raise ApplicationHandlerStop
+        storage.upsert_user(new_user_id, new_user_name, Role(role_key), active=True)
+        _reset_user_add_state(context)
+        context.user_data['state'] = DialogState.IDLE.value
+        await query.edit_message_text(f'Пользователь сохранён: {new_user_name} ({role_key})')
+        await query.message.reply_text('Главное меню', reply_markup=_menu_for_user(context, user_id))
+        raise ApplicationHandlerStop
+
+    if data == 'additem:start':
+        if not rbac.has_permission(user_id, 'inventory.inbound'):
+            await query.message.reply_text('Нет доступа к добавлению товара.', reply_markup=_menu_for_user(context, user_id))
+            raise ApplicationHandlerStop
+        _reset_add_item_state(context)
+        context.user_data['state'] = DialogState.ADD_ITEM_NAME.value
+        await query.message.reply_text('Введите название товара:')
+        raise ApplicationHandlerStop
+
+    if data == 'additem:save':
+        name = context.user_data.get('add_item_name')
+        norm = context.user_data.get('add_item_norm')
+        crit = context.user_data.get('add_item_crit')
+        qty = context.user_data.get('add_item_qty')
+        if not isinstance(name, str) or not isinstance(norm, int) or not isinstance(crit, int) or not isinstance(qty, int):
+            await query.message.reply_text('Данные товара потеряны. Начните заново.', reply_markup=_menu_for_user(context, user_id))
+            _reset_add_item_state(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            raise ApplicationHandlerStop
+        storage.add_item(name, norm=norm, crit_min=crit, qty=qty, is_active=True)
+        _reset_add_item_state(context)
+        context.user_data['state'] = DialogState.IDLE.value
+        await query.edit_message_text(f'Товар «{name}» сохранён.')
+        await query.message.reply_text('Главное меню', reply_markup=_menu_for_user(context, user_id))
+        raise ApplicationHandlerStop
+
+    if data.startswith('delete:item:'):
+        item = data.removeprefix('delete:item:').strip()
+        role = rbac.get_role(user_id)
+        if role not in {Role.DEV, Role.SENIOR_MANAGER}:
+            await query.message.reply_text('Недостаточно прав для удаления товара.', reply_markup=_menu_for_user(context, user_id))
+            raise ApplicationHandlerStop
+        storage.deactivate_item(item)
+        await query.edit_message_text(f'Товар «{item}» убран из списка (is_active=false).')
         await query.message.reply_text('Главное меню', reply_markup=_menu_for_user(context, user_id))
         raise ApplicationHandlerStop
 
@@ -81,6 +149,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         rbac.require_permission(user_id, 'inventory.outbound')
         result = inventory.outbound(MovementRequest(item=item, quantity=qty, user_id=user_id, op_id=f'take:{update.update_id}'))
+
+        reorder = context.application.bot_data.get('reorder_service')
+        if reorder is not None:
+            await reorder.check_and_upsert(item)
 
         _reset_take_state(context)
         context.user_data['state'] = DialogState.IDLE.value
