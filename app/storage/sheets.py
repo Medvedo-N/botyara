@@ -87,6 +87,21 @@ class GoogleSheetsStorage(StoragePort):
             except ValueError:
                 return default
 
+    @staticmethod
+    def _parse_int(value: str | None, *, default: int = 0) -> int:
+        if value is None:
+            return default
+        normalized = value.strip().replace(',', '.')
+        if not normalized:
+            return default
+        try:
+            return int(normalized)
+        except ValueError:
+            try:
+                return int(float(normalized))
+            except ValueError:
+                return default
+
     def _items_rows(self) -> list[list[str]]:
         logger.info(json.dumps({'event': 'items_read_started', 'range': 'items!A:E'}))
         try:
