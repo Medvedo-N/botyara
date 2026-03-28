@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -13,6 +15,7 @@ from app.models.domain import Item, Role, StockEntry
 from app.storage.interface import StoragePort
 
 SHEETS_SCOPE = ['https://www.googleapis.com/auth/spreadsheets']
+logger = logging.getLogger(__name__)
 
 
 class GoogleSheetsStorage(StoragePort):
@@ -67,15 +70,37 @@ class GoogleSheetsStorage(StoragePort):
     def _parse_bool(value: str | None) -> bool:
         if value is None:
             return False
-        return value.strip().lower() in {'true', '1', 'yes', 'да', 'y'}
+        return str(value).strip().lower() in {'true', '1', 'yes', 'да', 'y'}
+
+    @staticmethod
+    def _parse_int(value: Any, *, default: int = 0) -> int:
+        if value is None:
+            return default
+        normalized = str(value).strip().replace(',', '.')
+        if not normalized:
+            return default
+        try:
+            return int(normalized)
+        except ValueError:
+            try:
+                return int(float(normalized))
+            except ValueError:
+                return default
 
     def _items_rows(self) -> list[list[str]]:
-        return self._read('items!A:E')
+        logger.info(json.dumps({'event': 'items_read_started', 'range': 'items!A:E'}))
+        try:
+            return self._read('items!A:E')
+        except Exception as exc:
+            logger.exception(json.dumps({'event': 'items_read_failed', 'range': 'items!A:E', 'error': str(exc)}))
+            raise
 
     def _find_item_row(self, item: str) -> int | None:
         target = self._normalize_key(item)
         for idx, row in enumerate(self._items_rows(), start=1):
-            if row and self._normalize_key(row[0]) == target:
+            if not row or not row[0] or not str(row[0]).strip():
+                continue
+            if self._normalize_key(str(row[0])) == target:
                 return idx
         return None
 
@@ -95,27 +120,27 @@ class GoogleSheetsStorage(StoragePort):
     def get_item(self, name: str) -> Item | None:
         target = self._normalize_key(name)
         for row in self._items_rows():
-            if not row:
+            if not row or not row[0] or not str(row[0]).strip():
                 continue
-            if self._normalize_key(row[0]) != target:
+            if self._normalize_key(str(row[0])) != target:
                 continue
-            qty = int(row[1]) if len(row) > 1 and row[1].isdigit() else 0
-            norm = int(row[2]) if len(row) > 2 and row[2].isdigit() else 0
-            crit = int(row[3]) if len(row) > 3 and row[3].isdigit() else 0
+            qty = self._parse_int(row[1] if len(row) > 1 else None)
+            norm = self._parse_int(row[2] if len(row) > 2 else None)
+            crit = self._parse_int(row[3] if len(row) > 3 else None)
             active = self._parse_bool(row[4] if len(row) > 4 else 'true')
-            return Item(name=row[0], qty=qty, norm=norm, crit_min=crit, is_active=active)
+            return Item(name=str(row[0]).strip(), qty=qty, norm=norm, crit_min=crit, is_active=active)
         return None
 
     def list_items(self, *, active_only: bool = True) -> list[Item]:
         out: list[Item] = []
         for row in self._items_rows():
-            if not row:
+            if not row or not row[0] or not str(row[0]).strip():
                 continue
-            qty = int(row[1]) if len(row) > 1 and row[1].isdigit() else 0
-            norm = int(row[2]) if len(row) > 2 and row[2].isdigit() else 0
-            crit = int(row[3]) if len(row) > 3 and row[3].isdigit() else 0
+            qty = self._parse_int(row[1] if len(row) > 1 else None)
+            norm = self._parse_int(row[2] if len(row) > 2 else None)
+            crit = self._parse_int(row[3] if len(row) > 3 else None)
             active = self._parse_bool(row[4] if len(row) > 4 else 'true')
-            item = Item(name=row[0], qty=qty, norm=norm, crit_min=crit, is_active=active)
+            item = Item(name=str(row[0]).strip(), qty=qty, norm=norm, crit_min=crit, is_active=active)
             if active_only and not item.is_active:
                 continue
             out.append(item)
@@ -247,10 +272,10 @@ class GoogleSheetsStorage(StoragePort):
                 continue
             return {
                 'item_name': row[0],
-                'qty_now': int(row[1]) if len(row) > 1 and row[1].isdigit() else 0,
-                'norm': int(row[2]) if len(row) > 2 and row[2].isdigit() else 0,
-                'crit_min': int(row[3]) if len(row) > 3 and row[3].isdigit() else 0,
-                'to_order': int(row[4]) if len(row) > 4 and row[4].isdigit() else 0,
+                'qty_now': self._parse_int(row[1] if len(row) > 1 else None),
+                'norm': self._parse_int(row[2] if len(row) > 2 else None),
+                'crit_min': self._parse_int(row[3] if len(row) > 3 else None),
+                'to_order': self._parse_int(row[4] if len(row) > 4 else None),
                 'status': 'OPEN',
             }
         return None
@@ -259,7 +284,7 @@ class GoogleSheetsStorage(StoragePort):
         rows = self._read('users!A:D')
         row_num = None
         for idx, row in enumerate(rows, start=1):
-            if row and row[0].isdigit() and int(row[0]) == user_id:
+            if row and self._parse_int(row[0], default=-1) == user_id:
                 row_num = idx
                 break
         payload = [user_id, name, role.value, 'true' if active else 'false']
@@ -286,11 +311,12 @@ class GoogleSheetsStorage(StoragePort):
             if len(row) < 4:
                 continue
             user_id_raw, _name, role_raw, active_raw = row[:4]
-            if not user_id_raw.isdigit() or not self._parse_bool(active_raw):
+            user_id = self._parse_int(user_id_raw, default=-1)
+            if user_id < 0 or not self._parse_bool(active_raw):
                 continue
             role_key = role_raw.strip().lower()
             if role_key in {r.value for r in Role}:
-                data[int(user_id_raw)] = Role(role_key)
+                data[user_id] = Role(role_key)
 
         self._users_cache = data
         self._users_cache_ts = now
@@ -300,7 +326,7 @@ class GoogleSheetsStorage(StoragePort):
         users = self._load_users_cache()
         if user_id in users:
             return users[user_id]
-        superadmin = os.getenv('SUPERADMIN_TG_ID', '').strip()
-        if superadmin.isdigit() and user_id == int(superadmin):
+        superadmin = self._parse_int(os.getenv('SUPERADMIN_TG_ID'))
+        if superadmin > 0 and user_id == superadmin:
             return Role.DEV
         return Role.NO_ACCESS
