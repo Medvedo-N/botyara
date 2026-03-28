@@ -3,6 +3,7 @@ from telegram import KeyboardButton, ReplyKeyboardMarkup
 
 def main_menu(*, can_inbound: bool = True, can_users_view: bool = False) -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton('Остатки'), KeyboardButton('Взять')]]
+    rows.append([KeyboardButton('Заявка')])
     if can_inbound:
         rows.append([KeyboardButton('Приход')])
     if can_users_view:

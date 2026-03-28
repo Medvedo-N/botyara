@@ -4,8 +4,8 @@ import unittest
 from telegram.ext import ApplicationHandlerStop
 
 from app.bot.fsm.states import DialogState
-from app.bot.handlers_callbacks import callback_handler
 from app.bot.handlers_commands import start_handler
+from app.bot.handlers_inline import take_inline_callback_handler
 from app.bot.handlers_text import text_router_handler
 
 
@@ -17,10 +17,14 @@ class _FakeMessage:
     async def reply_text(self, text, reply_markup=None):
         self.sent.append((text, reply_markup))
 
+    async def reply_photo(self, photo, caption=None):
+        self.sent.append((caption or '', photo))
+
 
 class _FakeUser:
     def __init__(self, user_id: int):
         self.id = user_id
+        self.full_name = f'user-{user_id}'
 
 
 class _FakeInventory:
@@ -39,7 +43,10 @@ class _FakeInventory:
 
             def list_stock(self):
                 from app.models.domain import StockEntry
-                return [StockEntry(name=k, quantity=v) for k, v in self._stock.items()]
+                return [StockEntry(name=k, quantity=v, photo_file_id='photo1') for k, v in self._stock.items()]
+
+            def get_item_photo(self, item):
+                return 'photo1'
 
         return _S(self.stock)
 
@@ -105,50 +112,37 @@ class TakeButtonsTests(unittest.TestCase):
     def _run(self, coro):
         return asyncio.run(coro)
 
-    def test_happy_path_item_qty_confirm(self):
+    def test_take_button_opens_inline_flow_prompt(self):
         context = _FakeContext(role='user')
         update = _FakeUpdate('Взять')
         with self.assertRaises(ApplicationHandlerStop):
             self._run(text_router_handler(update, context))
-        self.assertEqual(context.user_data['state'], DialogState.TAKE_SELECT_ITEM.value)
+        text, markup = update.message.sent[0]
+        self.assertIn('inline-выбор', text.lower())
+        self.assertIsNotNone(markup)
 
+    def test_inline_take_custom_then_text_qty(self):
+        context = _FakeContext(role='user')
         cb_message = _FakeMessage()
         cb_update = _FakeUpdate(user_id=100)
-        cb_update.callback_query = _FakeCallbackQuery('take:item:Мыло', cb_message)
+        cb_update.callback_query = _FakeCallbackQuery('take2:custom:%D0%9C%D1%8B%D0%BB%D0%BE', cb_message)
         with self.assertRaises(ApplicationHandlerStop):
-            self._run(callback_handler(cb_update, context))
-        self.assertEqual(context.user_data['state'], DialogState.TAKE_SELECT_QTY.value)
+            self._run(take_inline_callback_handler(cb_update, context))
+        self.assertEqual(context.user_data['state'], DialogState.TAKE_INLINE_QTY.value)
 
-        cb_update.callback_query = _FakeCallbackQuery('take:qty:5', cb_message)
         with self.assertRaises(ApplicationHandlerStop):
-            self._run(callback_handler(cb_update, context))
-        self.assertEqual(context.user_data['state'], DialogState.TAKE_CONFIRM.value)
-
-        cb_update.callback_query = _FakeCallbackQuery('take:confirm', cb_message)
-        with self.assertRaises(ApplicationHandlerStop):
-            self._run(callback_handler(cb_update, context))
+            self._run(text_router_handler(_FakeUpdate('2', user_id=100), context))
         self.assertEqual(context.user_data['state'], DialogState.IDLE.value)
+        self.assertEqual(context.application.bot_data['inventory_service'].outbound_calls, [])
 
-    def test_cancel_on_each_step(self):
+    def test_inline_take_fixed_qty(self):
         context = _FakeContext(role='user')
-        for state in [DialogState.TAKE_SELECT_ITEM, DialogState.TAKE_SELECT_QTY, DialogState.TAKE_CONFIRM]:
-            context.user_data['state'] = state.value
-            cb_update = _FakeUpdate(user_id=100)
-            cb_update.callback_query = _FakeCallbackQuery('cancel', _FakeMessage())
-            with self.assertRaises(ApplicationHandlerStop):
-                self._run(callback_handler(cb_update, context))
-            self.assertEqual(context.user_data['state'], DialogState.IDLE.value)
-
-    def test_take_more_than_stock(self):
-        context = _FakeContext(role='user')
-        context.user_data.update({'state': DialogState.TAKE_CONFIRM.value, 'take_item': 'Мыло', 'take_qty': 100})
+        cb_message = _FakeMessage()
         cb_update = _FakeUpdate(user_id=100)
-        msg = _FakeMessage()
-        cb_update.callback_query = _FakeCallbackQuery('take:confirm', msg)
+        cb_update.callback_query = _FakeCallbackQuery('take2:qty:%D0%9C%D1%8B%D0%BB%D0%BE:5', cb_message)
         with self.assertRaises(ApplicationHandlerStop):
-            self._run(callback_handler(cb_update, context))
-        self.assertEqual(context.user_data['state'], DialogState.TAKE_SELECT_QTY.value)
-        self.assertIn('Недостаточно остатка', msg.sent[0][0])
+            self._run(take_inline_callback_handler(cb_update, context))
+        self.assertEqual(context.application.bot_data['inventory_service'].outbound_calls, [])
 
     def test_user_menu_has_take_without_inbound(self):
         context = _FakeContext(role='user')

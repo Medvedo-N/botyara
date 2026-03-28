@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -32,12 +33,12 @@ def _stock_marker(qty: int, norm: int | None, crit: int | None) -> str:
 
 
 def _reset_take_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in ['take_item', 'take_qty', 'take_custom_qty']:
+    for key in ['take_item', 'take_qty', 'take_custom_qty', 'take_inline_item']:
         context.user_data.pop(key, None)
 
 
 def _reset_add_item_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in ['add_item_name', 'add_item_norm', 'add_item_crit', 'add_item_qty']:
+    for key in ['add_item_name', 'add_item_norm', 'add_item_crit', 'add_item_qty', 'new_item_name', 'new_item_qty']:
         context.user_data.pop(key, None)
 
 
@@ -59,6 +60,51 @@ def _format_stock_lines(rows) -> list[str]:
     ]
 
 
+def _format_reorder_line(*, name: str, qty: int, norm: int) -> str:
+    need = max(norm - qty, 0)
+    return f"{name} — {need}"
+
+
+def build_reorder_request_text(context: ContextTypes.DEFAULT_TYPE, *, user_id: int) -> str:
+    logger.info(json.dumps({'event': 'reorder_request_started', 'user_id': user_id}))
+    inventory = context.application.bot_data['inventory_service']
+    try:
+        rows = inventory.storage.list_stock()
+    except Exception as exc:
+        logger.exception(json.dumps({'event': 'reorder_request_failed', 'user_id': user_id, 'error': str(exc)}))
+        return 'Не удалось сформировать заявку. Попробуйте позже.'
+
+    if not rows:
+        logger.info(json.dumps({'event': 'reorder_request_built', 'user_id': user_id, 'count': 0, 'status': 'empty'}))
+        return 'Список товаров пуст.'
+
+    lines: list[str] = []
+    invalid_rows = 0
+    for row in rows:
+        name = str(getattr(row, 'name', '')).strip()
+        try:
+            qty = int(getattr(row, 'quantity', 0))
+            norm = int(getattr(row, 'norm', 0))
+        except Exception:
+            invalid_rows += 1
+            continue
+        if not name:
+            invalid_rows += 1
+            continue
+        if qty < norm:
+            lines.append(_format_reorder_line(name=name, qty=qty, norm=norm))
+
+    if invalid_rows:
+        logger.warning(json.dumps({'event': 'reorder_invalid_row', 'user_id': user_id, 'count': invalid_rows}))
+
+    if not lines:
+        logger.info(json.dumps({'event': 'reorder_request_built', 'user_id': user_id, 'count': 0, 'status': 'all_norm'}))
+        return 'Все товары в норме. Заявка не требуется.'
+
+    logger.info(json.dumps({'event': 'reorder_request_built', 'user_id': user_id, 'count': len(lines), 'status': 'ok'}))
+    return '📋 Заявка на закуп\n\n' + '\n'.join(lines)
+
+
 def build_stock_page(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = PAGE_SIZE) -> tuple[str, InlineKeyboardMarkup | None, int]:
     inventory = context.application.bot_data['inventory_service']
     if not hasattr(inventory, 'storage'):
@@ -67,7 +113,20 @@ def build_stock_page(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: i
             return 'Остатков нет.', None, 1
         return fallback, None, 1
 
-    data = inventory.storage.list_stock()
+    logger.info(json.dumps({'event': 'stock_page_build_started', 'requested_page': page}))
+    try:
+        data = inventory.storage.list_stock()
+    except Exception as exc:
+        logger.exception(
+            json.dumps(
+                {
+                    'event': 'stock_page_build_failed',
+                    'requested_page': page,
+                    'error': str(exc),
+                }
+            )
+        )
+        return 'Не удалось загрузить остатки. Попробуйте позже.', None, 1
     if not data:
         return 'Остатков нет.', None, 1
     data = sorted(data, key=lambda item: item.name.lower())
@@ -102,10 +161,14 @@ async def fsm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 def _menu_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     rbac = context.application.bot_data['rbac_service']
-    return main_menu(
-        can_inbound=rbac.has_permission(user_id, 'inventory.inbound'),
-        can_users_view=rbac.has_permission(user_id, 'users.view'),
-    )
+    try:
+        can_inbound = rbac.has_permission(user_id, 'inventory.inbound')
+        can_users_view = rbac.has_permission(user_id, 'users.view')
+    except Exception:
+        logger.exception('menu_permissions_failed user_id=%s', user_id)
+        can_inbound = True
+        can_users_view = False
+    return main_menu(can_inbound=can_inbound, can_users_view=can_users_view)
 
 
 async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
@@ -114,11 +177,14 @@ async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         await update.message.reply_text('Нет прав на операцию «Взять».', reply_markup=_menu_for_user(context, user_id))
         return
 
-    inventory = context.application.bot_data['inventory_service']
-    rows = inventory.storage.list_stock()
-    context.user_data['state'] = DialogState.TAKE_SELECT_ITEM.value
-    _reset_take_state(context)
-    await update.message.reply_text('Выберите товар:', reply_markup=take_items_keyboard(rows))
+    logger.info(json.dumps({'event': 'take_inline_opened', 'user_id': user_id}))
+    kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton('🔎 Выбрать товар', switch_inline_query_current_chat='take ')]]
+    )
+    await update.message.reply_text(
+        'Откройте inline-выбор товара в этом чате:',
+        reply_markup=kb,
+    )
 
 
 async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -131,10 +197,14 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
 
     rbac_for_log = context.application.bot_data['rbac_service']
-    if hasattr(rbac_for_log, 'get_role'):
-        role = rbac_for_log.get_role(user_id).value
-    else:
-        role = 'unknown'
+    try:
+        if hasattr(rbac_for_log, 'get_role'):
+            role = rbac_for_log.get_role(user_id).value
+        else:
+            role = 'unknown'
+    except Exception:
+        role = 'role_lookup_failed'
+        logger.exception('router_role_lookup_failed user_id=%s', user_id)
     logger.info('ROUTER HIT text=%s state=%s role=%s', normalized, state.value, role)
 
     action = _menu_action(normalized)
@@ -162,13 +232,44 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             raise ApplicationHandlerStop
 
         if action == 'STOCK':
+            logger.info(json.dumps({'event': 'stock_action_received', 'user_id': user_id}))
             _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
             rbac_service = context.application.bot_data['rbac_service']
-            if not rbac_service.has_permission(user_id, 'inventory.view'):
+            try:
+                can_view_stock = rbac_service.has_permission(user_id, 'inventory.view')
+            except Exception as exc:
+                logger.exception(
+                    json.dumps(
+                        {
+                            'event': 'stock_permission_check_failed',
+                            'user_id': user_id,
+                            'error': str(exc),
+                        }
+                    )
+                )
+                await update.message.reply_text('Не удалось проверить права на просмотр остатков. Попробуйте позже.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
+            if not can_view_stock:
                 await update.message.reply_text('Нет прав на просмотр остатков.', reply_markup=_menu_for_user(context, user_id))
                 raise ApplicationHandlerStop
             await show_stock_list(update, context, page=1)
+            raise ApplicationHandlerStop
+
+        if action == 'REORDER':
+            _reset_all(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            rbac_service = context.application.bot_data['rbac_service']
+            try:
+                can_view_stock = rbac_service.has_permission(user_id, 'inventory.view')
+            except Exception:
+                await update.message.reply_text('Не удалось сформировать заявку. Попробуйте позже.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
+            if not can_view_stock:
+                await update.message.reply_text('Нет прав на формирование заявки.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
+            text_out = build_reorder_request_text(context, user_id=user_id)
+            await update.message.reply_text(text_out, reply_markup=_menu_for_user(context, user_id))
             raise ApplicationHandlerStop
 
         if state != DialogState.IDLE:
@@ -263,6 +364,10 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text('Сохранить товар?', reply_markup=kb)
             raise ApplicationHandlerStop
 
+        if state == DialogState.NEW_ITEM_PHOTO:
+            await update.message.reply_text('Для нового товара отправьте фото одним сообщением.')
+            raise ApplicationHandlerStop
+
         if state == DialogState.USER_ADD_ID:
             if not text.isdigit():
                 await update.message.reply_text('Введите TG ID числом.')
@@ -285,6 +390,29 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text('Выберите роль:', reply_markup=kb)
             raise ApplicationHandlerStop
 
+        if state == DialogState.TAKE_INLINE_QTY:
+            inline_item = context.user_data.get('take_inline_item')
+            if not inline_item:
+                await update.message.reply_text('Сначала выберите товар через inline-режим «Взять».')
+                raise ApplicationHandlerStop
+            value = parse_positive_int(text)
+            if value is None:
+                await update.message.reply_text('Введите количество числом. Например: 2')
+                raise ApplicationHandlerStop
+            logger.info(json.dumps({'event': 'take_confirm_requested', 'user_id': user_id, 'item': inline_item, 'qty': value}))
+            from app.bot.handlers_inline import _take_confirm_keyboard
+
+            request_id = str(update.update_id)
+            pending = context.application.bot_data.setdefault('take_pending_confirms', {})
+            pending[request_id] = {'item': inline_item, 'qty': value}
+            await update.message.reply_text(
+                f'Подтвердить выдачу?\n{inline_item} — {value} шт.',
+                reply_markup=_take_confirm_keyboard(inline_item, value, request_id),
+            )
+            _reset_all(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            raise ApplicationHandlerStop
+
         parsed = parse_inventory_input(text)
         if parsed is None:
             if state != DialogState.IDLE:
@@ -296,6 +424,14 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         item, quantity = parsed
         if state == DialogState.WAITING_INBOUND:
             rbac_service.require_permission(user_id, 'inventory.inbound')
+            existing = inventory_service.storage.get_item(item)
+            if existing is None:
+                logger.info(json.dumps({'event': 'new_item_photo_requested', 'user_id': user_id, 'item': item, 'qty': quantity}))
+                context.user_data['new_item_name'] = item
+                context.user_data['new_item_qty'] = quantity
+                context.user_data['state'] = DialogState.NEW_ITEM_PHOTO.value
+                await update.message.reply_text('Товар новый. Отправьте фото товара для создания позиции.')
+                raise ApplicationHandlerStop
             result = inventory_service.inbound(MovementRequest(item=item, quantity=quantity, user_id=user_id))
             kb = InlineKeyboardMarkup([[InlineKeyboardButton('➕ Добавить товар', callback_data='additem:start')]])
             await update.message.reply_text(f'Приход выполнен. Остаток: {result.balance}', reply_markup=kb)
@@ -312,12 +448,45 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     raise ApplicationHandlerStop
 
 
+async def fsm_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
+    if state != DialogState.NEW_ITEM_PHOTO:
+        return
+    photos = update.message.photo or []
+    if not photos:
+        await update.message.reply_text('Не вижу фото. Отправьте фото товара.')
+        raise ApplicationHandlerStop
+    item = context.user_data.get('new_item_name')
+    qty = context.user_data.get('new_item_qty')
+    user_id = update.effective_user.id
+    if not isinstance(item, str) or not isinstance(qty, int):
+        _reset_all(context)
+        context.user_data['state'] = DialogState.IDLE.value
+        await update.message.reply_text('Данные нового товара потеряны. Начните приход заново.')
+        raise ApplicationHandlerStop
+    photo_file_id = photos[-1].file_id
+    logger.info(json.dumps({'event': 'new_item_photo_received', 'user_id': user_id, 'item': item}))
+    try:
+        storage = context.application.bot_data['inventory_service'].storage
+        storage.add_item(item, norm=max(qty, 1), crit_min=0, qty=qty, is_active=True, photo_file_id=photo_file_id)
+        logger.info(json.dumps({'event': 'new_item_created', 'user_id': user_id, 'item': item, 'qty': qty}))
+        await update.message.reply_text(f'Новый товар «{item}» создан. Остаток: {qty}')
+    except Exception as exc:
+        logger.exception(json.dumps({'event': 'new_item_create_failed', 'user_id': user_id, 'item': item, 'error': str(exc)}))
+        await update.message.reply_text('Не удалось создать новый товар. Попробуйте позже.')
+    _reset_all(context)
+    context.user_data['state'] = DialogState.IDLE.value
+    raise ApplicationHandlerStop
+
+
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     state = context.user_data.get('state', DialogState.IDLE.value)
     logger.info('FALLBACK HIT text=%s state=%s', update.message.text, state)
-    await update.message.reply_text('Не понял запрос. Нажмите /help.', reply_markup=main_menu())
+    # Intentionally silent to avoid noisy UX in group chats.
 
 
 def _normalize_text(text: str) -> str:
@@ -336,6 +505,8 @@ def _menu_action(normalized_text: str) -> str | None:
         return 'USERS'
     if 'остатк' in normalized_text:
         return 'STOCK'
+    if 'заявк' in normalized_text:
+        return 'REORDER'
     if normalized_text.startswith('приход') or ' приход' in normalized_text or 'поступлен' in normalized_text:
         return 'IN'
     if normalized_text.startswith('взять') or 'взят' in normalized_text or 'выдач' in normalized_text:
