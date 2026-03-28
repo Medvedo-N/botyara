@@ -29,6 +29,8 @@ class GoogleSheetsStorage(StoragePort):
         self._service = build('sheets', 'v4', credentials=credentials, cache_discovery=False)
         self._users_cache: dict[int, Role] | None = None
         self._users_cache_ts: float = 0.0
+        self._photo_cache: dict[str, str] | None = None
+        self._photo_cache_ts: float = 0.0
 
     def _retry(self, action: Callable[[], Any]) -> Any:
         last_error: Exception | None = None
@@ -104,6 +106,27 @@ class GoogleSheetsStorage(StoragePort):
                 return idx
         return None
 
+    def _load_photo_cache(self) -> dict[str, str]:
+        now = time.time()
+        if self._photo_cache is not None and (now - self._photo_cache_ts) < 60:
+            return self._photo_cache
+        out: dict[str, str] = {}
+        try:
+            rows = self._read('item_photos!A:B')
+        except Exception:
+            rows = []
+        for row in rows:
+            if len(row) < 2:
+                continue
+            name = str(row[0]).strip()
+            photo = str(row[1]).strip()
+            if not name or not photo:
+                continue
+            out[self._normalize_key(name)] = photo
+        self._photo_cache = out
+        self._photo_cache_ts = now
+        return out
+
     def _operation_exists(self, op_id: str | None) -> bool:
         if not op_id:
             return False
@@ -128,7 +151,8 @@ class GoogleSheetsStorage(StoragePort):
             norm = self._parse_int(row[2] if len(row) > 2 else None)
             crit = self._parse_int(row[3] if len(row) > 3 else None)
             active = self._parse_bool(row[4] if len(row) > 4 else 'true')
-            return Item(name=str(row[0]).strip(), qty=qty, norm=norm, crit_min=crit, is_active=active)
+            photo = self._load_photo_cache().get(self._normalize_key(str(row[0])))
+            return Item(name=str(row[0]).strip(), qty=qty, norm=norm, crit_min=crit, is_active=active, photo_file_id=photo)
         return None
 
     def list_items(self, *, active_only: bool = True) -> list[Item]:
@@ -140,7 +164,8 @@ class GoogleSheetsStorage(StoragePort):
             norm = self._parse_int(row[2] if len(row) > 2 else None)
             crit = self._parse_int(row[3] if len(row) > 3 else None)
             active = self._parse_bool(row[4] if len(row) > 4 else 'true')
-            item = Item(name=str(row[0]).strip(), qty=qty, norm=norm, crit_min=crit, is_active=active)
+            photo = self._load_photo_cache().get(self._normalize_key(str(row[0])))
+            item = Item(name=str(row[0]).strip(), qty=qty, norm=norm, crit_min=crit, is_active=active, photo_file_id=photo)
             if active_only and not item.is_active:
                 continue
             out.append(item)
@@ -149,10 +174,12 @@ class GoogleSheetsStorage(StoragePort):
     def list_active_items(self) -> list[Item]:
         return sorted(self.list_items(active_only=True), key=lambda item: item.name.lower())
 
-    def add_item(self, name: str, *, norm: int, crit_min: int, qty: int, is_active: bool = True) -> None:
+    def add_item(self, name: str, *, norm: int, crit_min: int, qty: int, is_active: bool = True, photo_file_id: str | None = None) -> None:
         row = self._find_item_row(name)
         if row is None:
             self._append('items!A:E', [name, qty, norm, crit_min, 'true' if is_active else 'false'])
+            if photo_file_id:
+                self.set_item_photo(name, photo_file_id)
             return
 
         def _do() -> Any:
@@ -164,6 +191,8 @@ class GoogleSheetsStorage(StoragePort):
             ).execute(num_retries=self.retries)
 
         self._retry(_do)
+        if photo_file_id:
+            self.set_item_photo(name, photo_file_id)
 
     def deactivate_item(self, name: str) -> None:
         row = self._find_item_row(name)
@@ -231,7 +260,10 @@ class GoogleSheetsStorage(StoragePort):
         return record.qty
 
     def list_stock(self) -> list[StockEntry]:
-        return [StockEntry(name=x.name, quantity=x.qty, norm=x.norm, crit_min=x.crit_min) for x in self.list_items(active_only=True)]
+        return [
+            StockEntry(name=x.name, quantity=x.qty, norm=x.norm, crit_min=x.crit_min, photo_file_id=x.photo_file_id)
+            for x in self.list_items(active_only=True)
+        ]
 
     def get_item_limits(self, item: str) -> tuple[int | None, int | None]:
         record = self.get_item(item)
@@ -330,3 +362,28 @@ class GoogleSheetsStorage(StoragePort):
         if superadmin > 0 and user_id == superadmin:
             return Role.DEV
         return Role.NO_ACCESS
+
+    def get_item_photo(self, item: str) -> str | None:
+        return self._load_photo_cache().get(self._normalize_key(item))
+
+    def set_item_photo(self, item: str, photo_file_id: str) -> None:
+        rows = self._read('item_photos!A:B')
+        row_num = None
+        for idx, row in enumerate(rows, start=1):
+            if row and self._normalize_key(str(row[0])) == self._normalize_key(item):
+                row_num = idx
+                break
+        payload = [item, photo_file_id]
+        if row_num is None:
+            self._append('item_photos!A:B', payload)
+        else:
+            def _do() -> Any:
+                return self._service.spreadsheets().values().update(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f'item_photos!A{row_num}:B{row_num}',
+                    valueInputOption='USER_ENTERED',
+                    body={'values': [payload]},
+                ).execute(num_retries=self.retries)
+
+            self._retry(_do)
+        self._photo_cache = None

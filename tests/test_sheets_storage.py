@@ -55,6 +55,8 @@ class SheetsStorageUpsertTests(unittest.TestCase):
         storage._retry = lambda fn: fn()
         storage._users_cache = None
         storage._users_cache_ts = 0.0
+        storage._photo_cache = None
+        storage._photo_cache_ts = 0.0
         return storage
 
     def test_upsert_updates_only_qty_column_and_keeps_limits(self):

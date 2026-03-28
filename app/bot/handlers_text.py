@@ -33,12 +33,12 @@ def _stock_marker(qty: int, norm: int | None, crit: int | None) -> str:
 
 
 def _reset_take_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in ['take_item', 'take_qty', 'take_custom_qty']:
+    for key in ['take_item', 'take_qty', 'take_custom_qty', 'take_inline_item']:
         context.user_data.pop(key, None)
 
 
 def _reset_add_item_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in ['add_item_name', 'add_item_norm', 'add_item_crit', 'add_item_qty']:
+    for key in ['add_item_name', 'add_item_norm', 'add_item_crit', 'add_item_qty', 'new_item_name', 'new_item_qty']:
         context.user_data.pop(key, None)
 
 
@@ -177,24 +177,14 @@ async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         await update.message.reply_text('Нет прав на операцию «Взять».', reply_markup=_menu_for_user(context, user_id))
         return
 
-    logger.info(json.dumps({'event': 'take_flow_started', 'user_id': user_id}))
-    inventory = context.application.bot_data['inventory_service']
-    try:
-        rows = inventory.storage.list_stock()
-    except Exception as exc:
-        logger.exception(json.dumps({'event': 'take_flow_failed', 'user_id': user_id, 'error': str(exc)}))
-        context.user_data['state'] = DialogState.IDLE.value
-        _reset_take_state(context)
-        await update.message.reply_text('Не удалось загрузить товары для выдачи. Попробуйте позже.', reply_markup=_menu_for_user(context, user_id))
-        return
-    if not rows:
-        context.user_data['state'] = DialogState.IDLE.value
-        _reset_take_state(context)
-        await update.message.reply_text('Список товаров пуст. Сначала сделайте приход.', reply_markup=_menu_for_user(context, user_id))
-        return
-    context.user_data['state'] = DialogState.TAKE_SELECT_ITEM.value
-    _reset_take_state(context)
-    await update.message.reply_text('Выберите товар:', reply_markup=take_items_keyboard(rows))
+    logger.info(json.dumps({'event': 'take_inline_opened', 'user_id': user_id}))
+    kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton('🔎 Выбрать товар', switch_inline_query_current_chat='take ')]]
+    )
+    await update.message.reply_text(
+        'Откройте inline-выбор товара в этом чате:',
+        reply_markup=kb,
+    )
 
 
 async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -374,6 +364,10 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text('Сохранить товар?', reply_markup=kb)
             raise ApplicationHandlerStop
 
+        if state == DialogState.NEW_ITEM_PHOTO:
+            await update.message.reply_text('Для нового товара отправьте фото одним сообщением.')
+            raise ApplicationHandlerStop
+
         if state == DialogState.USER_ADD_ID:
             if not text.isdigit():
                 await update.message.reply_text('Введите TG ID числом.')
@@ -396,6 +390,30 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text('Выберите роль:', reply_markup=kb)
             raise ApplicationHandlerStop
 
+        if state == DialogState.TAKE_INLINE_QTY:
+            inline_item = context.user_data.get('take_inline_item')
+            if not inline_item:
+                await update.message.reply_text('Сначала выберите товар через inline-режим «Взять».')
+                raise ApplicationHandlerStop
+            value = parse_positive_int(text)
+            if value is None:
+                await update.message.reply_text('Введите количество числом. Например: 2')
+                raise ApplicationHandlerStop
+            logger.info(json.dumps({'event': 'take_commit_started', 'user_id': user_id, 'item': inline_item, 'qty': value}))
+            result = inventory_service.outbound(
+                MovementRequest(item=inline_item, quantity=value, user_id=user_id, op_id=f'inline-take-text:{update.update_id}')
+            )
+            photo = inventory_service.storage.get_item_photo(inline_item)
+            actor = update.effective_user.full_name or str(user_id)
+            message = f'✅ Выдача\nТовар: {inline_item}\nКто взял: {actor}\nКоличество: {value}\nОстаток: {result.balance}'
+            if photo:
+                await update.message.reply_photo(photo=photo, caption=message)
+            else:
+                await update.message.reply_text(message)
+            _reset_all(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            raise ApplicationHandlerStop
+
         parsed = parse_inventory_input(text)
         if parsed is None:
             if state != DialogState.IDLE:
@@ -407,6 +425,14 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         item, quantity = parsed
         if state == DialogState.WAITING_INBOUND:
             rbac_service.require_permission(user_id, 'inventory.inbound')
+            existing = inventory_service.storage.get_item(item)
+            if existing is None:
+                logger.info(json.dumps({'event': 'new_item_photo_requested', 'user_id': user_id, 'item': item, 'qty': quantity}))
+                context.user_data['new_item_name'] = item
+                context.user_data['new_item_qty'] = quantity
+                context.user_data['state'] = DialogState.NEW_ITEM_PHOTO.value
+                await update.message.reply_text('Товар новый. Отправьте фото товара для создания позиции.')
+                raise ApplicationHandlerStop
             result = inventory_service.inbound(MovementRequest(item=item, quantity=quantity, user_id=user_id))
             kb = InlineKeyboardMarkup([[InlineKeyboardButton('➕ Добавить товар', callback_data='additem:start')]])
             await update.message.reply_text(f'Приход выполнен. Остаток: {result.balance}', reply_markup=kb)
@@ -418,6 +444,39 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError as exc:
         await update.message.reply_text(f'Ошибка операции: {exc}', reply_markup=_menu_for_user(context, user_id))
 
+    _reset_all(context)
+    context.user_data['state'] = DialogState.IDLE.value
+    raise ApplicationHandlerStop
+
+
+async def fsm_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
+    if state != DialogState.NEW_ITEM_PHOTO:
+        return
+    photos = update.message.photo or []
+    if not photos:
+        await update.message.reply_text('Не вижу фото. Отправьте фото товара.')
+        raise ApplicationHandlerStop
+    item = context.user_data.get('new_item_name')
+    qty = context.user_data.get('new_item_qty')
+    user_id = update.effective_user.id
+    if not isinstance(item, str) or not isinstance(qty, int):
+        _reset_all(context)
+        context.user_data['state'] = DialogState.IDLE.value
+        await update.message.reply_text('Данные нового товара потеряны. Начните приход заново.')
+        raise ApplicationHandlerStop
+    photo_file_id = photos[-1].file_id
+    logger.info(json.dumps({'event': 'new_item_photo_received', 'user_id': user_id, 'item': item}))
+    try:
+        storage = context.application.bot_data['inventory_service'].storage
+        storage.add_item(item, norm=max(qty, 1), crit_min=0, qty=qty, is_active=True, photo_file_id=photo_file_id)
+        logger.info(json.dumps({'event': 'new_item_created', 'user_id': user_id, 'item': item, 'qty': qty}))
+        await update.message.reply_text(f'Новый товар «{item}» создан. Остаток: {qty}')
+    except Exception as exc:
+        logger.exception(json.dumps({'event': 'new_item_create_failed', 'user_id': user_id, 'item': item, 'error': str(exc)}))
+        await update.message.reply_text('Не удалось создать новый товар. Попробуйте позже.')
     _reset_all(context)
     context.user_data['state'] = DialogState.IDLE.value
     raise ApplicationHandlerStop

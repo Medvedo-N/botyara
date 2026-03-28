@@ -162,9 +162,8 @@ class StockListTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(text_router_handler(update, context))
 
-        self.assertEqual(context.user_data['state'], DialogState.TAKE_SELECT_ITEM.value)
         text, _ = update.message.sent[0]
-        self.assertIn('Выберите товар', text)
+        self.assertIn('inline', text.lower())
 
     def test_stock_marker_thresholds(self):
         self.assertEqual(_stock_marker(5, 50, 5), '🔴')
@@ -188,9 +187,8 @@ class StockListTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(text_router_handler(update, context))
 
-        self.assertEqual(context.user_data['state'], DialogState.IDLE.value)
         text, _ = update.message.sent[0]
-        self.assertIn('Список товаров пуст', text)
+        self.assertIn('inline', text.lower())
 
     def test_take_start_does_not_crash_when_storage_is_broken(self):
         context = _FakeContext(storage=_FakeStorageBroken())
@@ -200,7 +198,7 @@ class StockListTests(unittest.TestCase):
             self._run(text_router_handler(update, context))
 
         text, _ = update.message.sent[0]
-        self.assertIn('Не удалось загрузить товары для выдачи', text)
+        self.assertIn('inline', text.lower())
 
     def test_stock_action_does_not_crash_when_permission_check_fails(self):
         context = _FakeContext(rbac=_FakeRbacStockPermissionFails())
