@@ -402,9 +402,12 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.info(json.dumps({'event': 'take_confirm_requested', 'user_id': user_id, 'item': inline_item, 'qty': value}))
             from app.bot.handlers_inline import _take_confirm_keyboard
 
+            request_id = str(update.update_id)
+            pending = context.application.bot_data.setdefault('take_pending_confirms', {})
+            pending[request_id] = {'item': inline_item, 'qty': value}
             await update.message.reply_text(
                 f'Подтвердить выдачу?\n{inline_item} — {value} шт.',
-                reply_markup=_take_confirm_keyboard(inline_item, value, str(update.update_id)),
+                reply_markup=_take_confirm_keyboard(inline_item, value, request_id),
             )
             _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value

@@ -44,9 +44,18 @@ def _take_confirm_keyboard(item_name: str, qty: int, request_id: str) -> InlineK
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton('✅ Подтвердить', callback_data=f'take2:confirm:{encoded}:{qty}:{request_id}')],
-            [InlineKeyboardButton('❌ Отмена', callback_data=f'take2:cancel:{encoded}:{qty}:{request_id}')],
+            [InlineKeyboardButton('❌ Отмена', callback_data=f'take2:cancel:{request_id}')],
         ]
     )
+
+
+async def _edit_callback_message(query, text: str) -> None:
+    try:
+        await query.edit_message_caption(caption=text, reply_markup=None)
+        return
+    except Exception:
+        pass
+    await query.edit_message_text(text=text, reply_markup=None)
 
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -144,18 +153,17 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
         raise ApplicationHandlerStop
 
     if data.startswith('take2:cancel:'):
-        payload = data.removeprefix('take2:cancel:')
-        encoded_item, qty_raw, request_id = payload.rsplit(':', 2)
-        item = _decode_item(encoded_item)
-        logger.info(json.dumps({'event': 'take_confirm_cancelled', 'user_id': user_id, 'item': item, 'qty': int(qty_raw)}))
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        if query.message is not None:
-            await query.message.reply_text('Выдача отменена.')
+        request_id = data.removeprefix('take2:cancel:')
+        pending = context.application.bot_data.setdefault('take_pending_confirms', {})
+        payload = pending.pop(request_id, None)
+        if payload:
+            item = payload['item']
+            qty = payload['qty']
         else:
-            await context.bot.send_message(chat_id=user_id, text='Выдача отменена.')
+            item = 'Товар'
+            qty = 0
+        logger.info(json.dumps({'event': 'take_confirm_cancelled', 'user_id': user_id, 'item': item, 'qty': qty}))
+        await _edit_callback_message(query, f'❌ Отменено\n{item} — {qty} шт.')
         raise ApplicationHandlerStop
 
     if data.startswith('take2:confirm:'):
@@ -178,6 +186,8 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
             op_id = f'inline-take:{user_id}:{item}:{qty}'
             result = inventory.outbound(MovementRequest(item=item, quantity=qty, user_id=user_id, op_id=op_id))
             processed.add(confirm_key)
+            pending = context.application.bot_data.setdefault('take_pending_confirms', {})
+            pending.pop(request_id, None)
         except Exception as exc:
             logger.exception(json.dumps({'event': 'take_commit_failed', 'user_id': user_id, 'item': item, 'qty': qty, 'error': str(exc)}))
             if query.message is not None:
@@ -185,25 +195,9 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
             else:
                 await context.bot.send_message(chat_id=user_id, text=f'Не удалось списать «{item}»: {exc}')
             raise ApplicationHandlerStop
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        storage = inventory.storage
-        photo = storage.get_item_photo(item)
-        actor = update.effective_user.full_name or str(user_id)
-        caption = f'✅ Выдача\nТовар: {item}\nКто взял: {actor}\nКоличество: {qty}\nОстаток: {result.balance}'
+        caption = f'✅ Выдано\n{item} — {qty} шт.\nОстаток: {result.balance}'
         logger.info(json.dumps({'event': 'take_commit_completed', 'user_id': user_id, 'item': item, 'qty': qty, 'balance': result.balance}))
-        if query.message is not None:
-            if photo:
-                await query.message.reply_photo(photo=photo, caption=caption)
-            else:
-                await query.message.reply_text(caption)
-        else:
-            try:
-                await query.edit_message_caption(caption=caption)
-            except Exception:
-                await query.edit_message_text(text=caption)
+        await _edit_callback_message(query, caption)
         raise ApplicationHandlerStop
 
     if data.startswith('take2:qty:'):
@@ -212,10 +206,13 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
         item = _decode_item(encoded_item)
         qty = int(qty_raw)
         request_id = str(getattr(query, 'id', update.update_id))
+        pending = context.application.bot_data.setdefault('take_pending_confirms', {})
+        pending[request_id] = {'item': item, 'qty': qty}
         logger.info(json.dumps({'event': 'take_confirm_requested', 'user_id': user_id, 'item': item, 'qty': qty}))
         text = f'Подтвердить выдачу?\n{item} — {qty} шт.'
-        if query.message is not None:
-            await query.message.reply_text(text, reply_markup=_take_confirm_keyboard(item, qty, request_id))
-        else:
-            await context.bot.send_message(chat_id=user_id, text=text)
+        await _edit_callback_message(query, text)
+        try:
+            await query.edit_message_reply_markup(reply_markup=_take_confirm_keyboard(item, qty, request_id))
+        except Exception:
+            await query.edit_message_text(text=text, reply_markup=_take_confirm_keyboard(item, qty, request_id))
         raise ApplicationHandlerStop

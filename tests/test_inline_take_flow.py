@@ -86,10 +86,10 @@ class _FakeCallbackQuery:
     async def answer(self, text=None):
         return None
 
-    async def edit_message_caption(self, caption):
+    async def edit_message_caption(self, caption, reply_markup=None):
         self.edited.append(caption)
 
-    async def edit_message_text(self, text):
+    async def edit_message_text(self, text, reply_markup=None):
         self.edited.append(text)
 
     async def edit_message_reply_markup(self, reply_markup=None):
@@ -131,7 +131,7 @@ class InlineTakeFlowTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
         self.assertEqual(context.application.bot_data['inventory_service'].calls, [])
-        self.assertIn('Подтвердить выдачу?', update.callback_query.message.sent[0][0])
+        self.assertTrue(any('Подтвердить выдачу?' in str(x) for x in update.callback_query.edited))
 
     def test_callback_take_five_requests_confirm_first(self):
         context = _FakeContext()
@@ -140,7 +140,7 @@ class InlineTakeFlowTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
         self.assertEqual(context.application.bot_data['inventory_service'].calls, [])
-        self.assertIn('Подтвердить выдачу?', update.callback_query.message.sent[0][0])
+        self.assertTrue(any('Подтвердить выдачу?' in str(x) for x in update.callback_query.edited))
 
     def test_confirm_callback_commits_once(self):
         context = _FakeContext()
@@ -149,7 +149,7 @@ class InlineTakeFlowTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
         self.assertEqual(context.application.bot_data['inventory_service'].calls[-1], ('Мыло', 5))
-        self.assertNotIn('Не понял запрос', update.callback_query.message.sent[0][0])
+        self.assertTrue(any('✅ Выдано' in str(x) for x in update.callback_query.edited))
 
     def test_confirm_duplicate_callback_is_blocked(self):
         context = _FakeContext()
@@ -185,10 +185,12 @@ class InlineTakeFlowTests(unittest.TestCase):
     def test_confirm_cancel_does_not_commit(self):
         context = _FakeContext()
         update = _FakeUpdate()
-        update.callback_query = _FakeCallbackQuery('take2:cancel:%D0%9C%D1%8B%D0%BB%D0%BE:5:req-1')
+        context.application.bot_data['take_pending_confirms'] = {'req-1': {'item': 'Мыло', 'qty': 5}}
+        update.callback_query = _FakeCallbackQuery('take2:cancel:req-1')
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
         self.assertEqual(context.application.bot_data['inventory_service'].calls, [])
+        self.assertTrue(any('❌ Отменено' in str(x) for x in update.callback_query.edited))
 
     def test_fallback_silent_for_service_updates(self):
         context = _FakeContext()
