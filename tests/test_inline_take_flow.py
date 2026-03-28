@@ -79,6 +79,7 @@ class _FakeContext:
 class _FakeCallbackQuery:
     def __init__(self, data):
         self.data = data
+        self.id = 'cb-id-1'
         self.message = _FakeMessage()
         self.edited = []
 
@@ -90,6 +91,9 @@ class _FakeCallbackQuery:
 
     async def edit_message_text(self, text):
         self.edited.append(text)
+
+    async def edit_message_reply_markup(self, reply_markup=None):
+        self.edited.append('markup-cleared')
 
 
 class _FakeUpdate:
@@ -120,23 +124,55 @@ class InlineTakeFlowTests(unittest.TestCase):
         self._run(inline_query_handler(update, context))
         self.assertEqual(len(update.inline_query.answered), 1)
 
-    def test_callback_take_one_commits_without_fallback(self):
+    def test_callback_take_one_requests_confirm_first(self):
         context = _FakeContext()
         update = _FakeUpdate()
         update.callback_query = _FakeCallbackQuery('take2:qty:%D0%9C%D1%8B%D0%BB%D0%BE:1')
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
-        self.assertEqual(context.application.bot_data['inventory_service'].calls[-1], ('Мыло', 1))
-        self.assertNotIn('Не понял запрос', update.callback_query.message.sent[0][0])
+        self.assertEqual(context.application.bot_data['inventory_service'].calls, [])
+        self.assertIn('Подтвердить выдачу?', update.callback_query.message.sent[0][0])
 
-    def test_callback_take_five_commits_without_fallback(self):
+    def test_callback_take_five_requests_confirm_first(self):
         context = _FakeContext()
         update = _FakeUpdate()
         update.callback_query = _FakeCallbackQuery('take2:qty:%D0%9C%D1%8B%D0%BB%D0%BE:5')
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
+        self.assertEqual(context.application.bot_data['inventory_service'].calls, [])
+        self.assertIn('Подтвердить выдачу?', update.callback_query.message.sent[0][0])
+
+    def test_confirm_callback_commits_once(self):
+        context = _FakeContext()
+        update = _FakeUpdate()
+        update.callback_query = _FakeCallbackQuery('take2:confirm:%D0%9C%D1%8B%D0%BB%D0%BE:5:req-1')
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(take_inline_callback_handler(update, context))
         self.assertEqual(context.application.bot_data['inventory_service'].calls[-1], ('Мыло', 5))
         self.assertNotIn('Не понял запрос', update.callback_query.message.sent[0][0])
+
+    def test_confirm_duplicate_callback_is_blocked(self):
+        context = _FakeContext()
+        update = _FakeUpdate()
+        update.callback_query = _FakeCallbackQuery('take2:confirm:%D0%9C%D1%8B%D0%BB%D0%BE:5:req-1')
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(take_inline_callback_handler(update, context))
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(take_inline_callback_handler(update, context))
+        self.assertEqual(len(context.application.bot_data['inventory_service'].calls), 1)
+
+    def test_confirm_with_new_request_id_commits_again(self):
+        context = _FakeContext()
+        update1 = _FakeUpdate()
+        update1.callback_query = _FakeCallbackQuery('take2:confirm:%D0%9C%D1%8B%D0%BB%D0%BE:1:req-1')
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(take_inline_callback_handler(update1, context))
+
+        update2 = _FakeUpdate()
+        update2.callback_query = _FakeCallbackQuery('take2:confirm:%D0%9C%D1%8B%D0%BB%D0%BE:1:req-2')
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(take_inline_callback_handler(update2, context))
+        self.assertEqual(len(context.application.bot_data['inventory_service'].calls), 2)
 
     def test_callback_custom_switches_to_qty_state(self):
         context = _FakeContext()
@@ -145,6 +181,14 @@ class InlineTakeFlowTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(update, context))
         self.assertEqual(context.user_data.get('state'), 'TAKE_INLINE_QTY')
+
+    def test_confirm_cancel_does_not_commit(self):
+        context = _FakeContext()
+        update = _FakeUpdate()
+        update.callback_query = _FakeCallbackQuery('take2:cancel:%D0%9C%D1%8B%D0%BB%D0%BE:5:req-1')
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(take_inline_callback_handler(update, context))
+        self.assertEqual(context.application.bot_data['inventory_service'].calls, [])
 
     def test_fallback_silent_for_service_updates(self):
         context = _FakeContext()

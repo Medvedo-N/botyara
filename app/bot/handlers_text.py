@@ -62,7 +62,7 @@ def _format_stock_lines(rows) -> list[str]:
 
 def _format_reorder_line(*, name: str, qty: int, norm: int) -> str:
     need = max(norm - qty, 0)
-    return f"• {name} — остаток: {qty}, норма: {norm}, заказать: {need}"
+    return f"{name} — {need}"
 
 
 def build_reorder_request_text(context: ContextTypes.DEFAULT_TYPE, *, user_id: int) -> str:
@@ -399,17 +399,13 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             if value is None:
                 await update.message.reply_text('Введите количество числом. Например: 2')
                 raise ApplicationHandlerStop
-            logger.info(json.dumps({'event': 'take_commit_started', 'user_id': user_id, 'item': inline_item, 'qty': value}))
-            result = inventory_service.outbound(
-                MovementRequest(item=inline_item, quantity=value, user_id=user_id, op_id=f'inline-take-text:{update.update_id}')
+            logger.info(json.dumps({'event': 'take_confirm_requested', 'user_id': user_id, 'item': inline_item, 'qty': value}))
+            from app.bot.handlers_inline import _take_confirm_keyboard
+
+            await update.message.reply_text(
+                f'Подтвердить выдачу?\n{inline_item} — {value} шт.',
+                reply_markup=_take_confirm_keyboard(inline_item, value, str(update.update_id)),
             )
-            photo = inventory_service.storage.get_item_photo(inline_item)
-            actor = update.effective_user.full_name or str(user_id)
-            message = f'✅ Выдача\nТовар: {inline_item}\nКто взял: {actor}\nКоличество: {value}\nОстаток: {result.balance}'
-            if photo:
-                await update.message.reply_photo(photo=photo, caption=message)
-            else:
-                await update.message.reply_text(message)
             _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
             raise ApplicationHandlerStop

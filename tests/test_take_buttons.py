@@ -133,7 +133,7 @@ class TakeButtonsTests(unittest.TestCase):
         with self.assertRaises(ApplicationHandlerStop):
             self._run(text_router_handler(_FakeUpdate('2', user_id=100), context))
         self.assertEqual(context.user_data['state'], DialogState.IDLE.value)
-        self.assertEqual(context.application.bot_data['inventory_service'].outbound_calls[-1], ('Мыло', 2))
+        self.assertEqual(context.application.bot_data['inventory_service'].outbound_calls, [])
 
     def test_inline_take_fixed_qty(self):
         context = _FakeContext(role='user')
@@ -142,7 +142,7 @@ class TakeButtonsTests(unittest.TestCase):
         cb_update.callback_query = _FakeCallbackQuery('take2:qty:%D0%9C%D1%8B%D0%BB%D0%BE:5', cb_message)
         with self.assertRaises(ApplicationHandlerStop):
             self._run(take_inline_callback_handler(cb_update, context))
-        self.assertEqual(context.application.bot_data['inventory_service'].outbound_calls[-1], ('Мыло', 5))
+        self.assertEqual(context.application.bot_data['inventory_service'].outbound_calls, [])
 
     def test_user_menu_has_take_without_inbound(self):
         context = _FakeContext(role='user')

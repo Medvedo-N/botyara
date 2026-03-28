@@ -39,6 +39,16 @@ def _take_qty_keyboard(item_name: str) -> InlineKeyboardMarkup:
     )
 
 
+def _take_confirm_keyboard(item_name: str, qty: int, request_id: str) -> InlineKeyboardMarkup:
+    encoded = _encode_item(item_name)
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton('✅ Подтвердить', callback_data=f'take2:confirm:{encoded}:{qty}:{request_id}')],
+            [InlineKeyboardButton('❌ Отмена', callback_data=f'take2:cancel:{encoded}:{qty}:{request_id}')],
+        ]
+    )
+
+
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.inline_query
     if query is None or update.effective_user is None:
@@ -133,18 +143,41 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
             await context.bot.send_message(chat_id=user_id, text=f'Введите количество для «{item}»:')
         raise ApplicationHandlerStop
 
-    if data.startswith('take2:qty:'):
-        payload = data.removeprefix('take2:qty:')
-        encoded_item, qty_raw = payload.rsplit(':', 1)
+    if data.startswith('take2:cancel:'):
+        payload = data.removeprefix('take2:cancel:')
+        encoded_item, qty_raw, request_id = payload.rsplit(':', 2)
+        item = _decode_item(encoded_item)
+        logger.info(json.dumps({'event': 'take_confirm_cancelled', 'user_id': user_id, 'item': item, 'qty': int(qty_raw)}))
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if query.message is not None:
+            await query.message.reply_text('Выдача отменена.')
+        else:
+            await context.bot.send_message(chat_id=user_id, text='Выдача отменена.')
+        raise ApplicationHandlerStop
+
+    if data.startswith('take2:confirm:'):
+        payload = data.removeprefix('take2:confirm:')
+        encoded_item, qty_raw, request_id = payload.rsplit(':', 2)
         item = _decode_item(encoded_item)
         qty = int(qty_raw)
+        processed = context.application.bot_data.setdefault('take_processed_confirms', set())
+        confirm_key = f'{user_id}:{item}:{qty}:{request_id}'
+        if confirm_key in processed:
+            logger.info(json.dumps({'event': 'take_commit_duplicate_blocked', 'user_id': user_id, 'item': item, 'qty': qty}))
+            raise ApplicationHandlerStop
+        logger.info(json.dumps({'event': 'take_confirm_accepted', 'user_id': user_id, 'item': item, 'qty': qty}))
         logger.info(json.dumps({'event': 'take_commit_started', 'user_id': user_id, 'item': item, 'qty': qty}))
         try:
             from app.models.domain import MovementRequest
 
             rbac = context.application.bot_data['rbac_service']
             rbac.require_permission(user_id, 'inventory.outbound')
-            result = inventory.outbound(MovementRequest(item=item, quantity=qty, user_id=user_id, op_id=f'inline-take:{update.update_id}'))
+            op_id = f'inline-take:{user_id}:{item}:{qty}'
+            result = inventory.outbound(MovementRequest(item=item, quantity=qty, user_id=user_id, op_id=op_id))
+            processed.add(confirm_key)
         except Exception as exc:
             logger.exception(json.dumps({'event': 'take_commit_failed', 'user_id': user_id, 'item': item, 'qty': qty, 'error': str(exc)}))
             if query.message is not None:
@@ -152,7 +185,10 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
             else:
                 await context.bot.send_message(chat_id=user_id, text=f'Не удалось списать «{item}»: {exc}')
             raise ApplicationHandlerStop
-
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         storage = inventory.storage
         photo = storage.get_item_photo(item)
         actor = update.effective_user.full_name or str(user_id)
@@ -168,4 +204,18 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
                 await query.edit_message_caption(caption=caption)
             except Exception:
                 await query.edit_message_text(text=caption)
+        raise ApplicationHandlerStop
+
+    if data.startswith('take2:qty:'):
+        payload = data.removeprefix('take2:qty:')
+        encoded_item, qty_raw = payload.rsplit(':', 1)
+        item = _decode_item(encoded_item)
+        qty = int(qty_raw)
+        request_id = str(getattr(query, 'id', update.update_id))
+        logger.info(json.dumps({'event': 'take_confirm_requested', 'user_id': user_id, 'item': item, 'qty': qty}))
+        text = f'Подтвердить выдачу?\n{item} — {qty} шт.'
+        if query.message is not None:
+            await query.message.reply_text(text, reply_markup=_take_confirm_keyboard(item, qty, request_id))
+        else:
+            await context.bot.send_message(chat_id=user_id, text=text)
         raise ApplicationHandlerStop

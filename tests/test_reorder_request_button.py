@@ -83,8 +83,8 @@ class ReorderRequestButtonTests(unittest.TestCase):
         context = _FakeContext(_FakeStorage(rows))
         text = build_reorder_request_text(context, user_id=100)
         self.assertIn('📋 Заявка на закуп', text)
-        self.assertIn('• Мыло — остаток: 12, норма: 30, заказать: 18', text)
-        self.assertIn('• Тряпки — остаток: 8, норма: 10, заказать: 2', text)
+        self.assertIn('Мыло — 18', text)
+        self.assertIn('Тряпки — 2', text)
         self.assertNotIn('Перчатки', text)
 
     def test_reorder_when_all_items_are_normal(self):
