@@ -60,6 +60,51 @@ def _format_stock_lines(rows) -> list[str]:
     ]
 
 
+def _format_reorder_line(*, name: str, qty: int, norm: int) -> str:
+    need = max(norm - qty, 0)
+    return f"• {name} — остаток: {qty}, норма: {norm}, заказать: {need}"
+
+
+def build_reorder_request_text(context: ContextTypes.DEFAULT_TYPE, *, user_id: int) -> str:
+    logger.info(json.dumps({'event': 'reorder_request_started', 'user_id': user_id}))
+    inventory = context.application.bot_data['inventory_service']
+    try:
+        rows = inventory.storage.list_stock()
+    except Exception as exc:
+        logger.exception(json.dumps({'event': 'reorder_request_failed', 'user_id': user_id, 'error': str(exc)}))
+        return 'Не удалось сформировать заявку. Попробуйте позже.'
+
+    if not rows:
+        logger.info(json.dumps({'event': 'reorder_request_built', 'user_id': user_id, 'count': 0, 'status': 'empty'}))
+        return 'Список товаров пуст.'
+
+    lines: list[str] = []
+    invalid_rows = 0
+    for row in rows:
+        name = str(getattr(row, 'name', '')).strip()
+        try:
+            qty = int(getattr(row, 'quantity', 0))
+            norm = int(getattr(row, 'norm', 0))
+        except Exception:
+            invalid_rows += 1
+            continue
+        if not name:
+            invalid_rows += 1
+            continue
+        if qty < norm:
+            lines.append(_format_reorder_line(name=name, qty=qty, norm=norm))
+
+    if invalid_rows:
+        logger.warning(json.dumps({'event': 'reorder_invalid_row', 'user_id': user_id, 'count': invalid_rows}))
+
+    if not lines:
+        logger.info(json.dumps({'event': 'reorder_request_built', 'user_id': user_id, 'count': 0, 'status': 'all_norm'}))
+        return 'Все товары в норме. Заявка не требуется.'
+
+    logger.info(json.dumps({'event': 'reorder_request_built', 'user_id': user_id, 'count': len(lines), 'status': 'ok'}))
+    return '📋 Заявка на закуп\n\n' + '\n'.join(lines)
+
+
 def build_stock_page(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = PAGE_SIZE) -> tuple[str, InlineKeyboardMarkup | None, int]:
     inventory = context.application.bot_data['inventory_service']
     if not hasattr(inventory, 'storage'):
@@ -219,6 +264,22 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text('Нет прав на просмотр остатков.', reply_markup=_menu_for_user(context, user_id))
                 raise ApplicationHandlerStop
             await show_stock_list(update, context, page=1)
+            raise ApplicationHandlerStop
+
+        if action == 'REORDER':
+            _reset_all(context)
+            context.user_data['state'] = DialogState.IDLE.value
+            rbac_service = context.application.bot_data['rbac_service']
+            try:
+                can_view_stock = rbac_service.has_permission(user_id, 'inventory.view')
+            except Exception:
+                await update.message.reply_text('Не удалось сформировать заявку. Попробуйте позже.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
+            if not can_view_stock:
+                await update.message.reply_text('Нет прав на формирование заявки.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
+            text_out = build_reorder_request_text(context, user_id=user_id)
+            await update.message.reply_text(text_out, reply_markup=_menu_for_user(context, user_id))
             raise ApplicationHandlerStop
 
         if state != DialogState.IDLE:
@@ -386,6 +447,8 @@ def _menu_action(normalized_text: str) -> str | None:
         return 'USERS'
     if 'остатк' in normalized_text:
         return 'STOCK'
+    if 'заявк' in normalized_text:
+        return 'REORDER'
     if normalized_text.startswith('приход') or ' приход' in normalized_text or 'поступлен' in normalized_text:
         return 'IN'
     if normalized_text.startswith('взять') or 'взят' in normalized_text or 'выдач' in normalized_text:
