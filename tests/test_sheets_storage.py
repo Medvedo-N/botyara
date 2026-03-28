@@ -18,7 +18,7 @@ class _FakeValues:
         self.appended = []
 
     def get(self, spreadsheetId, range):
-        return _FakeExec(lambda: {'values': self.rows if range in {'items!A:E'} else []})
+        return _FakeExec(lambda: {'values': self.rows.get(range, [])})
 
     def update(self, spreadsheetId, range, valueInputOption, body):
         self.updated.append((range, body['values'][0]))
@@ -53,14 +53,43 @@ class SheetsStorageUpsertTests(unittest.TestCase):
         storage.timeout_seconds = 1
         storage._service = _FakeService(rows)
         storage._retry = lambda fn: fn()
+        storage._users_cache = None
+        storage._users_cache_ts = 0.0
         return storage
 
     def test_upsert_updates_only_qty_column_and_keeps_limits(self):
-        storage = self._storage_with_rows([['Фильтр', '10', '50', '5', 'true']])
+        storage = self._storage_with_rows({'items!A:E': [['Фильтр', '10', '50', '5', 'true']]})
         storage._upsert_balance(' фильтр ', 12)
 
         self.assertEqual(storage._service._sheets.values_api.updated, [('items!B1', [12])])
         self.assertEqual(storage._service._sheets.values_api.appended, [])
+
+    def test_get_item_parses_numeric_cells_with_spaces_and_decimals(self):
+        storage = self._storage_with_rows({'items!A:E': [['Фильтр', ' 10 ', '50.0', '5,9', 'true']]})
+        item = storage.get_item('фильтр')
+        self.assertIsNotNone(item)
+        self.assertEqual(item.qty, 10)
+        self.assertEqual(item.norm, 50)
+        self.assertEqual(item.crit_min, 5)
+
+    def test_get_open_reorder_parses_numbers_robustly(self):
+        storage = self._storage_with_rows({'reorder!A:G': [['Фильтр', ' 7 ', '20.0', '3,2', '13', 'OPEN', 'ts']]})
+        reorder = storage.get_open_reorder('ФИЛЬТР')
+        self.assertEqual(
+            reorder,
+            {
+                'item_name': 'Фильтр',
+                'qty_now': 7,
+                'norm': 20,
+                'crit_min': 3,
+                'to_order': 13,
+                'status': 'OPEN',
+            },
+        )
+
+    def test_get_user_role_handles_user_id_with_spaces(self):
+        storage = self._storage_with_rows({'users!A:D': [[' 12345 ', 'U', 'manager', 'true']]})
+        self.assertEqual(storage.get_user_role(12345).value, 'manager')
 
 
 if __name__ == '__main__':
