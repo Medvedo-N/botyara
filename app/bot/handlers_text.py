@@ -487,7 +487,7 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     state = context.user_data.get('state', DialogState.IDLE.value)
     logger.info('FALLBACK HIT text=%s state=%s', update.message.text, state)
-    await update.message.reply_text('Не понял запрос. Нажмите /help.', reply_markup=main_menu())
+    # Intentionally silent to avoid noisy UX in group chats.
 
 
 def _normalize_text(text: str) -> str:

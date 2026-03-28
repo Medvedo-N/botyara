@@ -8,7 +8,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
-    InlineQueryResultPhoto,
+    InlineQueryResultCachedPhoto,
     InputTextMessageContent,
     Update,
 )
@@ -48,14 +48,23 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(json.dumps({'event': 'take_inline_query_received', 'user_id': user_id, 'query': q}))
 
     inventory = context.application.bot_data['inventory_service']
-    rows = inventory.storage.list_stock()
+    try:
+        rows = inventory.storage.list_stock()
+    except Exception as exc:
+        logger.exception(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'count': 0, 'error': str(exc)}))
+        await query.answer(results=[], cache_time=0, is_personal=True)
+        return
     if q.startswith('take'):
         q = q.removeprefix('take').strip()
 
     results = []
+    seq = 0
     for row in rows:
         name = str(getattr(row, 'name', '')).strip()
-        qty = int(getattr(row, 'quantity', 0))
+        try:
+            qty = int(getattr(row, 'quantity', 0))
+        except Exception:
+            continue
         if not name or qty <= 0:
             continue
         if q and q not in name.lower():
@@ -63,21 +72,20 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         text = f'📦 {name}\nОстаток: {qty}'
         kb = _take_qty_keyboard(name)
         photo = getattr(row, 'photo_file_id', None)
+        seq += 1
         if photo:
             results.append(
-                InlineQueryResultPhoto(
-                    id=f'take-photo-{name}-{qty}',
+                InlineQueryResultCachedPhoto(
+                    id=f'take-photo-{seq}',
                     photo_file_id=photo,
                     caption=text,
                     reply_markup=kb,
-                    title=name,
-                    description=f'Остаток: {qty}',
                 )
             )
         else:
             results.append(
                 InlineQueryResultArticle(
-                    id=f'take-article-{name}-{qty}',
+                    id=f'take-article-{seq}',
                     title=name,
                     description=f'Остаток: {qty}',
                     input_message_content=InputTextMessageContent(text),
@@ -118,7 +126,11 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
         item = _decode_item(data.removeprefix('take2:custom:'))
         context.user_data['state'] = DialogState.TAKE_INLINE_QTY.value
         context.user_data['take_inline_item'] = item
-        await query.message.reply_text(f'Введите количество для «{item}»:')
+        logger.info(json.dumps({'event': 'take_custom_qty_requested', 'user_id': user_id, 'item': item}))
+        if query.message is not None:
+            await query.message.reply_text(f'Введите количество для «{item}»:')
+        else:
+            await context.bot.send_message(chat_id=user_id, text=f'Введите количество для «{item}»:')
         raise ApplicationHandlerStop
 
     if data.startswith('take2:qty:'):
@@ -135,15 +147,25 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
             result = inventory.outbound(MovementRequest(item=item, quantity=qty, user_id=user_id, op_id=f'inline-take:{update.update_id}'))
         except Exception as exc:
             logger.exception(json.dumps({'event': 'take_commit_failed', 'user_id': user_id, 'item': item, 'qty': qty, 'error': str(exc)}))
-            await query.message.reply_text(f'Не удалось списать «{item}»: {exc}')
+            if query.message is not None:
+                await query.message.reply_text(f'Не удалось списать «{item}»: {exc}')
+            else:
+                await context.bot.send_message(chat_id=user_id, text=f'Не удалось списать «{item}»: {exc}')
             raise ApplicationHandlerStop
 
         storage = inventory.storage
         photo = storage.get_item_photo(item)
         actor = update.effective_user.full_name or str(user_id)
         caption = f'✅ Выдача\nТовар: {item}\nКто взял: {actor}\nКоличество: {qty}\nОстаток: {result.balance}'
-        if photo:
-            await query.message.reply_photo(photo=photo, caption=caption)
+        logger.info(json.dumps({'event': 'take_commit_completed', 'user_id': user_id, 'item': item, 'qty': qty, 'balance': result.balance}))
+        if query.message is not None:
+            if photo:
+                await query.message.reply_photo(photo=photo, caption=caption)
+            else:
+                await query.message.reply_text(caption)
         else:
-            await query.message.reply_text(caption)
+            try:
+                await query.edit_message_caption(caption=caption)
+            except Exception:
+                await query.edit_message_text(text=caption)
         raise ApplicationHandlerStop
