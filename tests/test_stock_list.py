@@ -37,9 +37,19 @@ class _FakeStorage:
         return self._rows
 
 
+class _FakeStorageEmpty:
+    def list_stock(self):
+        return []
+
+
+class _FakeStorageBroken:
+    def list_stock(self):
+        raise RuntimeError('items range is invalid')
+
+
 class _FakeInventory:
-    def __init__(self):
-        self.storage = _FakeStorage()
+    def __init__(self, storage=None):
+        self.storage = storage or _FakeStorage()
 
 
 class _FakeRbac:
@@ -63,10 +73,26 @@ class _FakeRbac:
         return _Role()
 
 
+class _FakeRbacRoleLookupFails(_FakeRbac):
+    def get_role(self, user_id):
+        raise RuntimeError('rbac backend unavailable')
+
+
+class _FakeRbacStockPermissionFails(_FakeRbac):
+    def has_permission(self, user_id, permission):
+        if permission == 'inventory.view':
+            raise RuntimeError('rbac storage unavailable')
+        return super().has_permission(user_id, permission)
+
+
 class _FakeContext:
-    def __init__(self, *, can_view: bool = True):
+    def __init__(self, *, can_view: bool = True, rbac=None, storage=None):
         self.user_data = {'state': 'IDLE'}
-        self.application = type('App', (), {'bot_data': {'inventory_service': _FakeInventory(), 'rbac_service': _FakeRbac(can_view=can_view)}})()
+        self.application = type(
+            'App',
+            (),
+            {'bot_data': {'inventory_service': _FakeInventory(storage=storage), 'rbac_service': rbac or _FakeRbac(can_view=can_view)}},
+        )()
 
 
 class _FakeCallbackQuery:
@@ -144,6 +170,47 @@ class StockListTests(unittest.TestCase):
         self.assertEqual(_stock_marker(5, 50, 5), '🔴')
         self.assertEqual(_stock_marker(20, 50, 5), '🟡')
         self.assertEqual(_stock_marker(51, 50, 5), '🟢')
+
+    def test_router_does_not_crash_if_role_lookup_fails(self):
+        context = _FakeContext(rbac=_FakeRbacRoleLookupFails())
+        update = _FakeUpdate('Приход')
+
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(text_router_handler(update, context))
+
+        text, _ = update.message.sent[0]
+        self.assertIn('Введите приход', text)
+
+    def test_take_start_does_not_crash_when_stock_is_empty(self):
+        context = _FakeContext(storage=_FakeStorageEmpty())
+        update = _FakeUpdate('Взять')
+
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(text_router_handler(update, context))
+
+        self.assertEqual(context.user_data['state'], DialogState.IDLE.value)
+        text, _ = update.message.sent[0]
+        self.assertIn('Список товаров пуст', text)
+
+    def test_take_start_does_not_crash_when_storage_is_broken(self):
+        context = _FakeContext(storage=_FakeStorageBroken())
+        update = _FakeUpdate('Взять')
+
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(text_router_handler(update, context))
+
+        text, _ = update.message.sent[0]
+        self.assertIn('Не удалось загрузить товары для выдачи', text)
+
+    def test_stock_action_does_not_crash_when_permission_check_fails(self):
+        context = _FakeContext(rbac=_FakeRbacStockPermissionFails())
+        update = _FakeUpdate('Остатки')
+
+        with self.assertRaises(ApplicationHandlerStop):
+            self._run(text_router_handler(update, context))
+
+        text, _ = update.message.sent[0]
+        self.assertIn('Не удалось проверить права на просмотр остатков', text)
 
 
 if __name__ == '__main__':

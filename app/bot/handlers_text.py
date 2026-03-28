@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -67,7 +68,20 @@ def build_stock_page(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: i
             return 'Остатков нет.', None, 1
         return fallback, None, 1
 
-    data = inventory.storage.list_stock()
+    logger.info(json.dumps({'event': 'stock_page_build_started', 'requested_page': page}))
+    try:
+        data = inventory.storage.list_stock()
+    except Exception as exc:
+        logger.exception(
+            json.dumps(
+                {
+                    'event': 'stock_page_build_failed',
+                    'requested_page': page,
+                    'error': str(exc),
+                }
+            )
+        )
+        return 'Не удалось загрузить остатки. Попробуйте позже.', None, 1
     if not data:
         return 'Остатков нет.', None, 1
     data = sorted(data, key=lambda item: item.name.lower())
@@ -102,10 +116,14 @@ async def fsm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 def _menu_for_user(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     rbac = context.application.bot_data['rbac_service']
-    return main_menu(
-        can_inbound=rbac.has_permission(user_id, 'inventory.inbound'),
-        can_users_view=rbac.has_permission(user_id, 'users.view'),
-    )
+    try:
+        can_inbound = rbac.has_permission(user_id, 'inventory.inbound')
+        can_users_view = rbac.has_permission(user_id, 'users.view')
+    except Exception:
+        logger.exception('menu_permissions_failed user_id=%s', user_id)
+        can_inbound = True
+        can_users_view = False
+    return main_menu(can_inbound=can_inbound, can_users_view=can_users_view)
 
 
 async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
@@ -114,8 +132,21 @@ async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         await update.message.reply_text('Нет прав на операцию «Взять».', reply_markup=_menu_for_user(context, user_id))
         return
 
+    logger.info(json.dumps({'event': 'take_flow_started', 'user_id': user_id}))
     inventory = context.application.bot_data['inventory_service']
-    rows = inventory.storage.list_stock()
+    try:
+        rows = inventory.storage.list_stock()
+    except Exception as exc:
+        logger.exception(json.dumps({'event': 'take_flow_failed', 'user_id': user_id, 'error': str(exc)}))
+        context.user_data['state'] = DialogState.IDLE.value
+        _reset_take_state(context)
+        await update.message.reply_text('Не удалось загрузить товары для выдачи. Попробуйте позже.', reply_markup=_menu_for_user(context, user_id))
+        return
+    if not rows:
+        context.user_data['state'] = DialogState.IDLE.value
+        _reset_take_state(context)
+        await update.message.reply_text('Список товаров пуст. Сначала сделайте приход.', reply_markup=_menu_for_user(context, user_id))
+        return
     context.user_data['state'] = DialogState.TAKE_SELECT_ITEM.value
     _reset_take_state(context)
     await update.message.reply_text('Выберите товар:', reply_markup=take_items_keyboard(rows))
@@ -131,10 +162,14 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     state = DialogState(context.user_data.get('state', DialogState.IDLE.value))
 
     rbac_for_log = context.application.bot_data['rbac_service']
-    if hasattr(rbac_for_log, 'get_role'):
-        role = rbac_for_log.get_role(user_id).value
-    else:
-        role = 'unknown'
+    try:
+        if hasattr(rbac_for_log, 'get_role'):
+            role = rbac_for_log.get_role(user_id).value
+        else:
+            role = 'unknown'
+    except Exception:
+        role = 'role_lookup_failed'
+        logger.exception('router_role_lookup_failed user_id=%s', user_id)
     logger.info('ROUTER HIT text=%s state=%s role=%s', normalized, state.value, role)
 
     action = _menu_action(normalized)
@@ -162,10 +197,25 @@ async def text_router_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             raise ApplicationHandlerStop
 
         if action == 'STOCK':
+            logger.info(json.dumps({'event': 'stock_action_received', 'user_id': user_id}))
             _reset_all(context)
             context.user_data['state'] = DialogState.IDLE.value
             rbac_service = context.application.bot_data['rbac_service']
-            if not rbac_service.has_permission(user_id, 'inventory.view'):
+            try:
+                can_view_stock = rbac_service.has_permission(user_id, 'inventory.view')
+            except Exception as exc:
+                logger.exception(
+                    json.dumps(
+                        {
+                            'event': 'stock_permission_check_failed',
+                            'user_id': user_id,
+                            'error': str(exc),
+                        }
+                    )
+                )
+                await update.message.reply_text('Не удалось проверить права на просмотр остатков. Попробуйте позже.', reply_markup=_menu_for_user(context, user_id))
+                raise ApplicationHandlerStop
+            if not can_view_stock:
                 await update.message.reply_text('Нет прав на просмотр остатков.', reply_markup=_menu_for_user(context, user_id))
                 raise ApplicationHandlerStop
             await show_stock_list(update, context, page=1)
