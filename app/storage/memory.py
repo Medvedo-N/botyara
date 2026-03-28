@@ -37,12 +37,19 @@ class MemoryStorage(StoragePort):
     def list_active_items(self) -> list[Item]:
         return sorted(self.list_items(active_only=True), key=lambda item: item.name.lower())
 
-    def add_item(self, name: str, *, norm: int, crit_min: int, qty: int, is_active: bool = True) -> None:
+    def add_item(self, name: str, *, norm: int, crit_min: int, qty: int, is_active: bool = True, photo_file_id: str | None = None) -> None:
         item = self.get_item(name)
         if item:
-            self._items[item.name] = Item(name=item.name, norm=norm, crit_min=crit_min, qty=qty, is_active=is_active)
+            self._items[item.name] = Item(
+                name=item.name,
+                norm=norm,
+                crit_min=crit_min,
+                qty=qty,
+                is_active=is_active,
+                photo_file_id=photo_file_id if photo_file_id is not None else item.photo_file_id,
+            )
             return
-        self._items[name] = Item(name=name, norm=norm, crit_min=crit_min, qty=qty, is_active=is_active)
+        self._items[name] = Item(name=name, norm=norm, crit_min=crit_min, qty=qty, is_active=is_active, photo_file_id=photo_file_id)
 
     def deactivate_item(self, name: str) -> None:
         item = self.get_item(name)
@@ -94,7 +101,7 @@ class MemoryStorage(StoragePort):
 
     def list_stock(self) -> list[StockEntry]:
         return [
-            StockEntry(name=x.name, quantity=x.qty, norm=x.norm, crit_min=x.crit_min)
+            StockEntry(name=x.name, quantity=x.qty, norm=x.norm, crit_min=x.crit_min, photo_file_id=x.photo_file_id)
             for x in sorted(self.list_items(active_only=True), key=lambda i: i.name)
         ]
 
@@ -121,3 +128,20 @@ class MemoryStorage(StoragePort):
 
     def get_user_role(self, user_id: int) -> Role:
         return self._roles.get(user_id, Role.NO_ACCESS)
+
+    def get_item_photo(self, item: str) -> str | None:
+        record = self.get_item(item)
+        return record.photo_file_id if record else None
+
+    def set_item_photo(self, item: str, photo_file_id: str) -> None:
+        record = self.get_item(item)
+        if not record:
+            raise ValueError('item not found')
+        self._items[record.name] = Item(
+            name=record.name,
+            qty=record.qty,
+            norm=record.norm,
+            crit_min=record.crit_min,
+            is_active=record.is_active,
+            photo_file_id=photo_file_id,
+        )
