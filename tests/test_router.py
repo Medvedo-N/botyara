@@ -8,6 +8,7 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(_menu_action(_normalize_text('Приход')), 'IN')
         self.assertEqual(_menu_action(_normalize_text('Взять')), 'OUT')
         self.assertEqual(_menu_action(_normalize_text('Остатки')), 'STOCK')
+        self.assertEqual(_menu_action(_normalize_text('Заявка')), 'REORDER')
         self.assertEqual(_menu_action(_normalize_text('Пользователи')), 'USERS')
 
     def test_menu_actions_with_emoji_and_suffixes(self):

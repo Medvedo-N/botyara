@@ -121,5 +121,7 @@ curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo"
 ## Тесты
 
 ```bash
+pytest -q
+# или
 python -m unittest discover -s tests -p 'test_*.py'
 ```
