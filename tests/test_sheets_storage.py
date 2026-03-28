@@ -72,6 +72,28 @@ class SheetsStorageUpsertTests(unittest.TestCase):
         self.assertEqual(item.norm, 50)
         self.assertEqual(item.crit_min, 5)
 
+    def test_list_stock_skips_invalid_rows_and_tolerates_mixed_numeric_values(self):
+        storage = self._storage_with_rows(
+            {
+                'items!A:E': [
+                    ['', '10', '20', '1', 'true'],
+                    ['   ', '7', '8', '1', 'true'],
+                    ['Фильтр', ' 10 ', '', '5,9', 'true'],
+                    ['Масло', None, '30.0', '', 'true'],
+                ]
+            }
+        )
+        rows = storage.list_stock()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].name, 'Фильтр')
+        self.assertEqual(rows[0].quantity, 10)
+        self.assertEqual(rows[0].norm, 0)
+        self.assertEqual(rows[0].crit_min, 5)
+        self.assertEqual(rows[1].name, 'Масло')
+        self.assertEqual(rows[1].quantity, 0)
+        self.assertEqual(rows[1].norm, 30)
+        self.assertEqual(rows[1].crit_min, 0)
+
     def test_get_open_reorder_parses_numbers_robustly(self):
         storage = self._storage_with_rows({'reorder!A:G': [['Фильтр', ' 7 ', '20.0', '3,2', '13', 'OPEN', 'ts']]})
         reorder = storage.get_open_reorder('ФИЛЬТР')
