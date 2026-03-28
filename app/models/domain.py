@@ -24,6 +24,7 @@ class Item(BaseModel):
     norm: int = 0
     crit_min: int = 0
     is_active: bool = True
+    photo_file_id: str | None = None
 
 
 class StockEntry(BaseModel):
@@ -31,6 +32,7 @@ class StockEntry(BaseModel):
     quantity: int = 0
     norm: int = 0
     crit_min: int = 0
+    photo_file_id: str | None = None
 
 
 class OperationResult(BaseModel):
