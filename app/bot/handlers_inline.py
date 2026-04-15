@@ -128,6 +128,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     title=f"{item_count}. {name}",
                     description=f"📊 {qty} шт.",
                     input_message_content=InputTextMessageContent(
+                        message_text=item_text + "\n\nВыберите количество:"xtMessageContent(
                         message_text=item_text + "\n\nВыберите количество:",
                         parse_mode='HTML'
                     ),
