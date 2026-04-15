@@ -76,8 +76,11 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if q.startswith('take'):
         q = q.removeprefix('take').strip()
 
-    results = []
-    seq = 0
+    # Фильтруем и группируем товары по релевантности
+    exact_match = []      # Название точно совпадает с запросом
+    starts_with = []      # Название начинается с запроса
+    contains = []         # Запрос содержится в названии
+
     for row in rows:
         name = str(getattr(row, 'name', '')).strip()
         try:
@@ -86,12 +89,31 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             continue
         if not name or qty <= 0:
             continue
-        if q and q not in name.lower():
-            continue
+
+        name_lower = name.lower()
+
+        # Пропускаем, если есть фильтр и товар не подходит
+        if q:
+            if name_lower == q:
+                exact_match.append((name, qty, row))
+            elif name_lower.startswith(q):
+                starts_with.append((name, qty, row))
+            elif q in name_lower:
+                contains.append((name, qty, row))
+            # Иначе не подходит - пропускаем
+        else:
+            # Нет фильтра - показываем все товары, отсортированные по названию
+            contains.append((name, qty, row))
+
+    # Объединяем результаты по приоритету: точное совпадение -> начинается с -> содержит
+    sorted_items = exact_match + starts_with + contains
+
+    results = []
+    for seq, (name, qty, row) in enumerate(sorted_items, start=1):
         text = f'📦 {name}\nОстаток: {qty}'
         kb = _take_qty_keyboard(name)
         photo = getattr(row, 'photo_file_id', None)
-        seq += 1
+
         if photo:
             results.append(
                 InlineQueryResultCachedPhoto(
@@ -113,7 +135,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     reply_markup=kb,
                 )
             )
-    logger.info(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'count': len(results)}))
+
+    logger.info(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'query': q, 'count': len(results), 'exact': len(exact_match), 'starts': len(starts_with), 'contains': len(contains)}))
     await query.answer(results=results, cache_time=1, is_personal=True)
 
 
