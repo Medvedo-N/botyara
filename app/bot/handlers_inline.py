@@ -104,30 +104,31 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         photo = getattr(item, 'photo_file_id', None)
         kb = _take_qty_keyboard(name)
 
-        caption_text = f"{item_count}. {name}\n📊 Остаток: {qty} шт."
+        # Общий текст для всех результатов
+        item_text = f"<b>{item_count}. {name}</b>\n📊 Остаток: <b>{qty} шт.</b>"
 
         if photo:
-            # С фотографией
+            # С фотографией - фото + название + количество в caption
             results.append(
                 InlineQueryResultCachedPhoto(
                     id=f'photo-{item_count}',
                     photo_file_id=photo,
                     title=f"{item_count}. {name}",
-                    description=f"Остаток: {qty} шт.",
-                    caption=caption_text,
+                    description=f"📊 {qty} шт.",
+                    caption=item_text,
+                    parse_mode='HTML',
                     reply_markup=kb,
                 )
             )
         else:
             # Без фотографии
-            message_text = f"<b>{item_count}. {name}</b>\n📊 Остаток: {qty} шт.\n\nВыберите количество:"
             results.append(
                 InlineQueryResultArticle(
                     id=f'text-{item_count}',
                     title=f"{item_count}. {name}",
-                    description=f"Остаток: {qty} шт.",
+                    description=f"📊 {qty} шт.",
                     input_message_content=InputTextMessageContent(
-                        message_text=message_text,
+                        message_text=item_text + "\n\nВыберите количество:",
                         parse_mode='HTML'
                     ),
                     reply_markup=kb,
