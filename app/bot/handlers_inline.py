@@ -137,7 +137,9 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
 
     logger.info(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'query': q, 'count': len(results), 'exact': len(exact_match), 'starts': len(starts_with), 'contains': len(contains)}))
-    await query.answer(results=results, cache_time=1, is_personal=True)
+    # Don't cache empty queries to ensure full results are always shown
+    cache_time = 0 if not q else 60
+    await query.answer(results=results, cache_time=cache_time, is_personal=True)
 
 
 async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
