@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from telegram.ext import Application
@@ -50,9 +51,17 @@ def get_rbac_service(storage: StoragePort) -> RbacService:
 
 def build_telegram_application() -> Application:
     settings = get_settings()
+    
+    if not settings.BOT_TOKEN:
+        logger.warning(json.dumps({'event': 'build_telegram_app', 'status': 'bot_token_not_set', 'message': 'BOT_TOKEN is empty, using placeholder token'}))
+        # Use placeholder token to allow app to start - webhook won't work but healthz will
+        app_token = 'PLACEHOLDER_TOKEN'
+    else:
+        app_token = settings.BOT_TOKEN
+    
     storage = get_storage()
 
-    application = Application.builder().token(settings.BOT_TOKEN).build()
+    application = Application.builder().token(app_token).build()
     async def _telegram_error_handler(update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception('telegram_update_failed', exc_info=context.error)
         target_message = None

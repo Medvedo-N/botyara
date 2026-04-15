@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     settings = get_settings()
+    
+    if not settings.BOT_TOKEN:
+        logger.error(json.dumps({
+            'event': 'startup_error', 
+            'status': 'bot_token_not_set',
+            'message': 'BOT_TOKEN environment variable is not set. Webhook will not work.'
+        }))
+    
     application = build_telegram_application()
     app_instance.state.telegram_application = application
     await application.initialize()
@@ -55,8 +63,15 @@ async def logging_middleware(request: Request, call_next):
 
 
 @app.get('/healthz')
-async def healthz() -> dict[str, str | bool]:
-    return {'ok': True, 'version': '2.0-fixed'}
+async def healthz() -> dict:
+    settings = get_settings()
+    return {
+        'ok': True, 
+        'version': '2.0-fixed',
+        'env': settings.ENV,
+        'bot_token_set': bool(settings.BOT_TOKEN),
+        'storage_backend': settings.STORAGE_BACKEND,
+    }
 
 
 @app.get('/')
@@ -65,8 +80,13 @@ async def root() -> dict[str, str]:
 
 
 @app.post('/webhook')
-async def webhook(request: Request) -> dict[str, bool]:
+async def webhook(request: Request) -> dict[str, bool | str]:
     settings = get_settings()
+    
+    if not settings.BOT_TOKEN:
+        logger.error(json.dumps({'event': 'webhook_error', 'error': 'BOT_TOKEN is not set in environment'}))
+        raise HTTPException(status_code=503, detail='Bot is not configured. Set BOT_TOKEN environment variable.')
+    
     if settings.WEBHOOK_SECRET:
         header_secret = request.headers.get('x-telegram-bot-api-secret-token')
         if header_secret != settings.WEBHOOK_SECRET:

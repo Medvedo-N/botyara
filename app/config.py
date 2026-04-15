@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
-    BOT_TOKEN: str = Field(min_length=1)
+    BOT_TOKEN: str = Field(default='', min_length=0)
     ENV: str = 'staging'
     LOG_LEVEL: str = 'INFO'
     STORAGE_BACKEND: str = 'memory'
