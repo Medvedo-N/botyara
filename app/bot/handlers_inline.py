@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from urllib.parse import quote, unquote
@@ -8,6 +9,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
+    InlineQueryResultCachedPhoto,
     InputTextMessageContent,
     Update,
 )
@@ -61,7 +63,12 @@ async def _edit_callback_message(query, text: str) -> None:
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Обработчик inline запросов для выбора товаров.
-    При пустом запросе показывает все товары. При вводе текста - фильтрует по названию.
+    
+    Логика:
+    1. Пустой поиск (@bot) - показывает весь список товаров
+    2. При вводе текста - фильтрует и ищет по названию
+    3. Формат: [Номер] 📷 ФОТО | Название (Остаток: N шт.)
+    4. Сортировка по релевантности + нечёткий поиск
     """
     query = update.inline_query
     if query is None or update.effective_user is None:
@@ -77,57 +84,106 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         all_items = inventory.storage.list_stock()
     except Exception as exc:
         logger.exception(json.dumps({'event': 'inline_query_error', 'user_id': user_id, 'error': str(exc)}))
-        await query.answer(results=[], cache_time=1, is_personal=True)
+        await query.answer(results=[], cache_time=0, is_personal=True)
         return
 
-    # Фильтруем и сортируем товары
-    matched_items = []
-    if not search_text:
-        # Пустой запрос: показываем все товары с остатком > 0
-        matched_items = [item for item in all_items if item.quantity > 0]
-    else:
-        # Есть запрос: фильтруем и сортируем
-        starts_with = []
-        contains = []
-        for item in all_items:
-            if item.quantity <= 0:
-                continue
-            name_lower = item.name.lower()
-            if name_lower.startswith(search_text):
-                starts_with.append(item)
-            elif search_text in name_lower:
-                contains.append(item)
-        matched_items = starts_with + contains
+    # Категоризируем товары по релевантности
+    exact_matches = []
+    starts_with_matches = []
+    contains_matches = []
+    fuzzy_matches = []
 
-    # Формируем результаты для Telegram
+    # Получаем все названия товаров для fuzzy поиска
+    all_item_names = [str(item.name).strip() for item in all_items if item.quantity > 0]
+
+    for item in all_items:
+        # Пропускаем товары без остатка
+        if item.quantity <= 0:
+            continue
+
+        name = str(item.name).strip()
+        name_lower = name.lower()
+
+        if not search_text:
+            # Нет поиска - все в одну категорию
+            exact_matches.append(item)
+        elif name_lower == search_text:
+            exact_matches.append(item)
+        elif name_lower.startswith(search_text):
+            starts_with_matches.append(item)
+        elif search_text in name_lower:
+            contains_matches.append(item)
+
+    # Если нет совпадений по основным категориям, ищем fuzzy
+    if search_text and not (exact_matches or starts_with_matches or contains_matches):
+        close_matches = difflib.get_close_matches(search_text, all_item_names, n=20, cutoff=0.6)
+        for close_name in close_matches:
+            for item in all_items:
+                if str(item.name).strip() == close_name and item.quantity > 0:
+                    fuzzy_matches.append(item)
+                    break
+
+    # Объединяем по приоритету
+    sorted_items = exact_matches + starts_with_matches + contains_matches + fuzzy_matches
+
+    # Ограничиваем до 50 результатов (лимит Telegram)
+    sorted_items = sorted_items[:50]
+
     results = []
-    for i, item in enumerate(matched_items[:50]):  # Ограничение API Telegram
-        text = f"Выбран товар: {item.name}\nОстаток: {item.quantity} шт.\n\nУкажите, сколько взять."
-        description = f'Остаток: {item.quantity} шт.'
-        kb = _take_qty_keyboard(item.name)
+    for idx, item in enumerate(sorted_items, start=1):
+        photo = getattr(item, 'photo_file_id', None)
+        name = str(item.name).strip()
+        qty = item.quantity
+        
+        # Форматирование: номер в title
+        title = f"{idx}. {name}"
+        description = f"📊 Остаток: {qty} шт."
+        
+        kb = _take_qty_keyboard(name)
 
-        # Для упрощения используем только текстовые результаты без фото
-        results.append(
-            InlineQueryResultArticle(
-                id=f'item-text-{i}',
-                title=item.name,
-                description=description,
-                input_message_content=InputTextMessageContent(message_text=text),
-                reply_markup=kb,
+        if photo:
+            # С фотографией (главный формат)
+            results.append(
+                InlineQueryResultCachedPhoto(
+                    id=f'item-photo-{idx}',
+                    photo_file_id=photo,
+                    title=title,
+                    description=description,
+                    caption=f"{idx}. {name}\n📊 Остаток: {qty} шт.",
+                    reply_markup=kb,
+                    parse_mode='HTML',
+                )
             )
-        )
+        else:
+            # Без фотографии
+            results.append(
+                InlineQueryResultArticle(
+                    id=f'item-text-{idx}',
+                    title=title,
+                    description=description,
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"<b>{idx}. {name}</b>\n📊 Остаток: {qty} шт.\n\nВыберите количество:",
+                        parse_mode='HTML',
+                    ),
+                    reply_markup=kb,
+                )
+            )
 
     logger.info(
         json.dumps({
             'event': 'inline_results_ready',
             'user_id': user_id,
             'query': search_text,
-            'results_count': len(results),
+            'total': len(results),
+            'exact': len(exact_matches),
+            'starts_with': len(starts_with_matches),
+            'contains': len(contains_matches),
+            'fuzzy': len(fuzzy_matches),
         })
     )
 
-    # Короткое время кеширования, чтобы данные были актуальными
-    cache_time = 5 if not search_text else 60
+    # Не кешируем пустые запросы
+    cache_time = 0 if not search_text else 300
     await query.answer(results=results, cache_time=cache_time, is_personal=True)
 
 
