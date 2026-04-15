@@ -14,6 +14,7 @@ from telegram import (
 )
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 from app.bot.fsm.states import DialogState
+from app.models.domain import MovementRequest
 
 logger = logging.getLogger(__name__)
 
@@ -206,8 +207,6 @@ async def take_inline_callback_handler(update: Update, context: ContextTypes.DEF
         logger.info(json.dumps({'event': 'take_confirm_accepted', 'user_id': user_id, 'item': item, 'qty': qty}))
         logger.info(json.dumps({'event': 'take_commit_started', 'user_id': user_id, 'item': item, 'qty': qty}))
         try:
-            from app.models.domain import MovementRequest
-
             rbac = context.application.bot_data['rbac_service']
             rbac.require_permission(user_id, 'inventory.outbound')
             op_id = f'inline-take:{user_id}:{item}:{qty}'
