@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from urllib.parse import quote, unquote
@@ -60,86 +61,154 @@ async def _edit_callback_message(query, text: str) -> None:
 
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик inline запросов для выбора товаров.
+    
+    Логика:
+    1. При пустом поиске (@bot) - показывает весь список товаров
+    2. При вводе текста - ищет товары по названию с нечётким совпадением
+    3. Сортировка: точные совпадения -> начинается с -> содержит -> fuzzy match
+    4. Форматирование: одна строка = фото + название + количество
+    """
     query = update.inline_query
     if query is None or update.effective_user is None:
         return
+
     user_id = update.effective_user.id
-    q = (query.query or '').strip().lower()
-    logger.info(json.dumps({'event': 'take_inline_query_received', 'user_id': user_id, 'query': q}))
+    search_text = (query.query or '').strip().lower()
+    
+    # Убираем префикс "take" если есть
+    if search_text.startswith('take'):
+        search_text = search_text.removeprefix('take').strip()
+
+    logger.info(
+        json.dumps({
+            'event': 'inline_query_received',
+            'user_id': user_id,
+            'query': search_text
+        })
+    )
 
     inventory = context.application.bot_data['inventory_service']
     try:
-        rows = inventory.storage.list_stock()
+        all_items = inventory.storage.list_stock()
     except Exception as exc:
-        logger.exception(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'count': 0, 'error': str(exc)}))
+        logger.exception(
+            json.dumps({
+                'event': 'inline_query_error',
+                'user_id': user_id,
+                'error': str(exc)
+            })
+        )
         await query.answer(results=[], cache_time=1, is_personal=True)
         return
-    if q.startswith('take'):
-        q = q.removeprefix('take').strip()
 
-    # Фильтруем и группируем товары по релевантности
-    exact_match = []      # Название точно совпадает с запросом
-    starts_with = []      # Название начинается с запроса
-    contains = []         # Запрос содержится в названии
+    # Фильтруем и категоризуем товары
+    exact_matches = []       # Название совпадает полностью
+    starts_with_matches = [] # Название начинается с поиска
+    contains_matches = []    # Поиск содержится в названии
+    fuzzy_matches = []       # Нечёткое совпадение (difflib)
 
-    for row in rows:
+    item_names = [str(getattr(row, 'name', '')).strip() for row in all_items]
+
+    for row in all_items:
         name = str(getattr(row, 'name', '')).strip()
         try:
             qty = int(getattr(row, 'quantity', 0))
         except Exception:
             continue
+
         if not name or qty <= 0:
             continue
 
         name_lower = name.lower()
 
-        # Пропускаем, если есть фильтр и товар не подходит
-        if q:
-            if name_lower == q:
-                exact_match.append((name, qty, row))
-            elif name_lower.startswith(q):
-                starts_with.append((name, qty, row))
-            elif q in name_lower:
-                contains.append((name, qty, row))
-            # Иначе не подходит - пропускаем
-        else:
-            # Нет фильтра - показываем все товары, отсортированные по названию
-            contains.append((name, qty, row))
+        # Категоризируем товар в зависимости от поиска
+        if not search_text:
+            # Нет поиска - все товары в одну категорию
+            exact_matches.append((name, qty, row))
+        elif name_lower == search_text:
+            exact_matches.append((name, qty, row))
+        elif name_lower.startswith(search_text):
+            starts_with_matches.append((name, qty, row))
+        elif search_text in name_lower:
+            contains_matches.append((name, qty, row))
 
-    # Объединяем результаты по приоритету: точное совпадение -> начинается с -> содержит
-    sorted_items = exact_match + starts_with + contains
+    # Если поиск есть и не нашли по основным категориям, ищем fuzzy
+    if search_text and not (exact_matches or starts_with_matches or contains_matches):
+        # Используем difflib для нечёткого поиска
+        close_matches = difflib.get_close_matches(search_text, item_names, n=10, cutoff=0.6)
+        for close_name in close_matches:
+            for row in all_items:
+                if str(getattr(row, 'name', '')).strip() == close_name:
+                    try:
+                        qty = int(getattr(row, 'quantity', 0))
+                        if qty > 0:
+                            fuzzy_matches.append((close_name, qty, row))
+                    except Exception:
+                        pass
+                    break
+
+    # Объединяем результаты по приоритету
+    sorted_items = exact_matches + starts_with_matches + contains_matches + fuzzy_matches
+
+    # Лимит результатов (Telegram позволяет до 50, но обычно показывает ~10)
+    sorted_items = sorted_items[:50]
 
     results = []
     for seq, (name, qty, row) in enumerate(sorted_items, start=1):
-        text = f'📦 {name}\nОстаток: {qty}'
-        kb = _take_qty_keyboard(name)
         photo = getattr(row, 'photo_file_id', None)
+        
+        # Форматирование: одна строка с фото, названием и количеством
+        text = f'{name}\n📊 Кол-во: {qty}'
+        description = f'Остаток: {qty} шт.'
+
+        kb = _take_qty_keyboard(name)
 
         if photo:
+            # С фото
             results.append(
                 InlineQueryResultCachedPhoto(
-                    id=f'take-photo-{seq}',
+                    id=f'item-photo-{seq}',
                     photo_file_id=photo,
                     title=name,
-                    description=f'Остаток: {qty}',
+                    description=description,
                     caption=text,
                     reply_markup=kb,
+                    parse_mode='HTML',
                 )
             )
         else:
+            # Без фото - текстовый результат
             results.append(
                 InlineQueryResultArticle(
-                    id=f'take-article-{seq}',
+                    id=f'item-text-{seq}',
                     title=name,
-                    description=f'Остаток: {qty}',
-                    input_message_content=InputTextMessageContent(text),
+                    description=description,
+                    input_message_content=InputTextMessageContent(
+                        message_text=text,
+                        parse_mode='HTML',
+                    ),
                     reply_markup=kb,
+                    thumb_url=None,
                 )
             )
 
-    logger.info(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'query': q, 'count': len(results), 'exact': len(exact_match), 'starts': len(starts_with), 'contains': len(contains)}))
-    # Don't cache empty queries to ensure full results are always shown
-    cache_time = 0 if not q else 60
+    logger.info(
+        json.dumps({
+            'event': 'inline_results_ready',
+            'user_id': user_id,
+            'query': search_text,
+            'total_results': len(results),
+            'exact': len(exact_matches),
+            'starts_with': len(starts_with_matches),
+            'contains': len(contains_matches),
+            'fuzzy': len(fuzzy_matches),
+        })
+    )
+
+    # Не кешируем пустые запросы, чтобы список обновлялся
+    cache_time = 0 if not search_text else 300
     await query.answer(results=results, cache_time=cache_time, is_personal=True)
 
 
