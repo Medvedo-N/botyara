@@ -71,7 +71,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         rows = inventory.storage.list_stock()
     except Exception as exc:
         logger.exception(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'count': 0, 'error': str(exc)}))
-        await query.answer(results=[], cache_time=0, is_personal=True)
+        await query.answer(results=[], cache_time=1, is_personal=True)
         return
     if q.startswith('take'):
         q = q.removeprefix('take').strip()
@@ -97,6 +97,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 InlineQueryResultCachedPhoto(
                     id=f'take-photo-{seq}',
                     photo_file_id=photo,
+                    title=name,
+                    description=f'Остаток: {qty}',
                     caption=text,
                     reply_markup=kb,
                 )
@@ -112,7 +114,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             )
     logger.info(json.dumps({'event': 'take_inline_results_built', 'user_id': user_id, 'count': len(results)}))
-    await query.answer(results=results, cache_time=0, is_personal=True)
+    await query.answer(results=results, cache_time=1, is_personal=True)
 
 
 async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

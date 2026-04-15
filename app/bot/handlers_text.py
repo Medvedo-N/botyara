@@ -179,7 +179,7 @@ async def _start_take_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, u
 
     logger.info(json.dumps({'event': 'take_inline_opened', 'user_id': user_id}))
     kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton('🔎 Выбрать товар', switch_inline_query_current_chat='take ')]]
+        [[InlineKeyboardButton('🔎 Выбрать товар', switch_inline_query_current_chat='')]]
     )
     await update.message.reply_text(
         'Откройте inline-выбор товара в этом чате:',
